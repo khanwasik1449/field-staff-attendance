@@ -15,6 +15,8 @@ class AuditLog(models.Model):
         USER_ACTIVATED = 'USER_ACTIVATED', 'User Activated'
         USER_UPDATED = 'USER_UPDATED', 'User Updated'
         SETTING_UPDATED = 'SETTING_UPDATED', 'Setting Updated'
+        SCHEDULE_UPDATE = 'SCHEDULE_UPDATE', 'Schedule Updated'
+        SCHEDULE_RESET = 'SCHEDULE_RESET', 'Schedule Reset'
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,

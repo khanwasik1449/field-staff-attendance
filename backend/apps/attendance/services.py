@@ -12,6 +12,7 @@ from rest_framework.views import exception_handler
 from rest_framework.response import Response
 
 from .models import Attendance, AttendanceSetting, ISO_WEEKDAYS
+from .schedule_services import ScheduleService
 from apps.audit.services import AuditService
 
 def get_reverse_geocoded_address(latitude, longitude):
@@ -61,12 +62,22 @@ def get_dhaka_datetime():
 def get_dhaka_date():
     return get_dhaka_datetime().date()
 
-def format_time_display(dt):
+def format_time_display(dt, with_seconds=False):
     if not dt:
         return ""
     tz = get_server_timezone()
     local_dt = dt.astimezone(tz) if dt.tzinfo else dt
-    return local_dt.strftime("%I:%M %p")
+    return local_dt.strftime("%I:%M:%S %p" if with_seconds else "%I:%M %p")
+
+def format_duration_short(minutes):
+    """
+    Register-style duration, e.g. 471 -> '7:51'. Used by the monthly calendar's
+    Duration column, which reads as hours:minutes rather than '7h 51m'.
+    """
+    if minutes is None:
+        return "--"
+    hours = minutes // 60
+    return f"{hours}:{minutes % 60:02d}"
 
 def format_duration_display(minutes):
     if minutes is None:
@@ -372,9 +383,11 @@ class AttendanceService:
         assistant and needs a ManualAttendanceRequest instead. The device clock
         is never consulted.
 
-        Only configured working days are considered. An assistant is never nagged
-        to file manual attendance for a weekend or holiday day they were not
-        required to work.
+        Only days the employee actually owes attendance for are considered,
+        resolved from their per-employee schedule (ScheduleService), which falls
+        back to the company-wide working week. An assistant is never nagged to
+        file manual attendance for a weekly off, public holiday or leave day they
+        were not required to work.
 
         Returns None when there is nothing outstanding.
         """
@@ -382,9 +395,17 @@ class AttendanceService:
             today = get_dhaka_date()
 
         setting = AttendanceSetting.get_active()
-        working = setting.working_days_in_range(
-            today - timedelta(days=90), today - timedelta(days=1)
-        )
+        # A record is only outstanding if the employee owed duty that day, so
+        # the candidate dates come from the employee's own schedule rather than
+        # the company working week. Resolved in one pass to avoid an N+1.
+        window_start = today - timedelta(days=90)
+        working = [
+            date.fromisoformat(s['date'])
+            for s in ScheduleService.resolve_range(
+                employee, window_start, today - timedelta(days=1), setting=setting
+            )
+            if s['is_working']
+        ]
         if not working:
             return None
 
@@ -412,24 +433,33 @@ class AttendanceService:
         }
 
     @staticmethod
-    def _serialize_calendar_attendance(rec):
-        """Compact per-day attendance payload for the history calendar."""
+    def _serialize_calendar_attendance(rec, schedule=None, setting=None):
+        """
+        Per-day attendance payload for the monthly calendar, including the
+        register's seconds-precision times and the derived IN/OUT status
+        columns. schedule is the resolved day schedule for that date.
+        """
+        in_status = None
+        out_offset = None
+        if schedule is not None:
+            in_status = ScheduleService.get_in_status(rec.check_in_time, schedule, setting=setting)
+            out_offset = ScheduleService.get_out_offset_minutes(rec.check_out_time, schedule)
+
         return {
             'id': rec.id,
             'attendance_date': str(rec.attendance_date),
             'status': rec.status,
             'attendance_type': rec.attendance_type,
             'check_in_time': rec.check_in_time.isoformat(),
-            'check_in_display': format_time_display(rec.check_in_time),
+            'check_in_display': format_time_display(rec.check_in_time, with_seconds=True),
             'check_out_time': rec.check_out_time.isoformat() if rec.check_out_time else None,
             'check_out_display': (
-                format_time_display(rec.check_out_time) if rec.check_out_time else None
+                format_time_display(rec.check_out_time, with_seconds=True) if rec.check_out_time else None
             ),
             'working_duration_minutes': rec.working_duration_minutes,
-            'working_duration_display': (
-                format_duration_display(rec.working_duration_minutes)
-                if rec.working_duration_minutes is not None else None
-            ),
+            'working_duration_display': format_duration_short(rec.working_duration_minutes),
+            'in_status': in_status,
+            'out_offset_minutes': out_offset,
             'check_in_address': rec.check_in_address,
             'check_in_latitude': float(rec.check_in_latitude) if rec.check_in_latitude is not None else None,
             'check_in_longitude': float(rec.check_in_longitude) if rec.check_in_longitude is not None else None,
@@ -439,13 +469,16 @@ class AttendanceService:
     @staticmethod
     def get_monthly_calendar(employee, year, month):
         """
-        Builds a working-day aware attendance calendar for one calendar month.
+        Builds the register-style monthly attendance sheet for one employee.
 
-        Unlike a plain list of Attendance rows, this includes every configured
-        working day in the month - including days with no attendance record at
-        all - because a missed check-in is precisely the case where no row
-        exists. Clients must not re-derive the working calendar themselves; the
-        server owns it (AttendanceSetting.work_days).
+        Every calendar day in the month is returned - including weekly offs,
+        public holidays, approved leave and future days - because the register
+        shows the whole month, not only the days that needed attendance. A day
+        the employee did not owe duty for is never offered a manual request.
+
+        Each day carries the resolved 'schedule' (G / WH / X / PH / LV) and,
+        when a record exists, the seconds-precision check-in/out times, a
+        register-format duration, and the derived IN / OUT status columns.
 
         Each day reports an 'issue' of MISSED_CHECK_IN or MISSED_CHECK_OUT so
         the assistant can be offered the correct manual request for that day.
@@ -478,6 +511,12 @@ class AttendanceService:
             )
         }
 
+        # One pass over the month resolves every day's schedule in three
+        # queries total rather than three per day.
+        schedules = ScheduleService.resolve_range(
+            employee, first, last, setting=setting
+        )
+
         days = []
         counts = {
             'working_days': 0,
@@ -485,11 +524,24 @@ class AttendanceService:
             'complete_days': 0,
             'missed_check_in': 0,
             'missed_check_out': 0,
+            'weekly_off_days': 0,
+            'holiday_days': 0,
+            'leave_days': 0,
         }
         total_minutes = 0
 
-        for day in setting.working_days_in_range(first, last):
-            counts['working_days'] += 1
+        for schedule in schedules:
+            day = date.fromisoformat(schedule['date'])
+            is_working = schedule['is_working']
+            if is_working:
+                counts['working_days'] += 1
+            elif schedule['code'] == 'X':
+                counts['weekly_off_days'] += 1
+            elif schedule['code'] == 'PH':
+                counts['holiday_days'] += 1
+            elif schedule['code'] == 'LV':
+                counts['leave_days'] += 1
+
             rec = records.get(day)
             pending = pending_requests.get(day)
 
@@ -497,8 +549,10 @@ class AttendanceService:
             is_today = day == today
             day_has_ended = day < today
 
+            # A manual request is only ever offered for a day the employee
+            # actually owed duty for.
             issue = None
-            if day_has_ended:
+            if is_working and day_has_ended:
                 if rec is None:
                     issue = 'MISSED_CHECK_IN'
                 elif rec.check_out_time is None:
@@ -516,15 +570,44 @@ class AttendanceService:
             elif issue == 'MISSED_CHECK_OUT':
                 counts['missed_check_out'] += 1
 
+            # The register's Remarks column: an explicit reason beats a raw
+            # admin note, which in turn beats a blank cell.
+            remarks = ''
+            if schedule['code'] == 'PH':
+                remarks = f"Public Holiday: {schedule['name']}" if schedule.get('name') else 'Public Holiday'
+            elif schedule['code'] == 'LV':
+                remarks = f"{schedule['name']} Leave" if schedule.get('name') else 'Approved Leave'
+            elif is_future:
+                remarks = 'Upcoming'
+            elif rec is not None and rec.admin_remarks:
+                remarks = rec.admin_remarks
+            elif rec is not None and rec.attendance_type == Attendance.Type.MANUAL:
+                remarks = 'Manual (Approved)'
+
             days.append({
                 'date': str(day),
+                'day': day.day,
                 'weekday': day.strftime('%A'),
+                'weekday_short': day.strftime('%a'),
                 'is_today': is_today,
                 'is_future': is_future,
                 'day_has_ended': day_has_ended,
+                'schedule': {
+                    'code': schedule['code'],
+                    'label': schedule['label'],
+                    'short_label': schedule['short_label'],
+                    'name': schedule.get('name'),
+                    'is_working': is_working,
+                    'start_time': schedule['start_time'],
+                    'end_time': schedule['end_time'],
+                    'source': schedule['source'],
+                },
                 'attendance': (
-                    AttendanceService._serialize_calendar_attendance(rec) if rec else None
+                    AttendanceService._serialize_calendar_attendance(
+                        rec, schedule=schedule, setting=setting
+                    ) if rec else None
                 ),
+                'remarks': remarks,
                 'issue': issue,
                 # A pending request already covers this day, so do not offer a
                 # second one - the service would reject it as a duplicate anyway.
@@ -543,6 +626,7 @@ class AttendanceService:
                 f"{num}:{name}" for num, name in ISO_WEEKDAYS.items()
                 if num in setting.working_weekdays
             ],
+            'schedule': ScheduleService.get_weekly_rows(employee),
             'summary': {
                 **counts,
                 'total_working_minutes': total_minutes,

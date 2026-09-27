@@ -34,13 +34,14 @@ class AttendanceSetting(models.Model):
     work_start_time = models.TimeField(default='09:00:00', help_text="Official shift start time")
     work_end_time = models.TimeField(default='17:00:00', help_text="Official shift end time")
     work_days = models.CharField(
-        default='1,2,3,4,5',
+        default='1,2,3,4,7',
         max_length=20,
         validators=[parse_work_days],
         help_text=(
             "Comma-separated ISO weekday numbers treated as working days "
             "(1=Monday ... 7=Sunday). Drives which days require attendance and "
-            "which days are eligible for a missed check-in request."
+            "which days are eligible for a missed check-in request. "
+            "Default is Sun-Thu (Friday and Saturday are weekly offs)."
         )
     )
     late_grace_minutes = models.PositiveIntegerField(
@@ -273,3 +274,83 @@ class Attendance(models.Model):
 
     def __str__(self):
         return f"{self.employee.employee_id} - {self.attendance_date} ({self.status})"
+
+
+class EmployeeSchedule(models.Model):
+    """
+    A standing weekly duty pattern for a single employee, one row per ISO weekday.
+
+    This is the authoritative source for the 'Day Schedule' column of the monthly
+    attendance calendar (G / WH / X). It is intentionally NOT effective-dated: a
+    pattern is standing until an administrator edits it. Where an employee has no
+    row for a weekday the ScheduleService falls back to the company-wide
+    AttendanceSetting (work_days + work_start_time + work_end_time), so partial
+    configuration always yields a usable schedule.
+    """
+
+    class DayType(models.TextChoices):
+        GENERAL = 'G', 'General (Office)'
+        WORK_FROM_HOME = 'WH', 'Work from Home'
+        WEEKLY_OFF = 'X', 'Weekly Off'
+
+    employee = models.ForeignKey(
+        Employee,
+        on_delete=models.CASCADE,
+        related_name='schedules'
+    )
+    weekday = models.PositiveSmallIntegerField(
+        choices=[(d, name) for d, name in sorted(ISO_WEEKDAYS.items())],
+        help_text="ISO weekday number (1=Monday ... 7=Sunday)"
+    )
+    day_type = models.CharField(
+        max_length=2,
+        choices=DayType.choices,
+        default=DayType.GENERAL,
+        db_index=True
+    )
+    start_time = models.TimeField(
+        null=True,
+        blank=True,
+        help_text="Scheduled start time. Used for GENERAL days to compute the late cutoff."
+    )
+    end_time = models.TimeField(
+        null=True,
+        blank=True,
+        help_text="Scheduled end time. Used to compute the OUT offset."
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['weekday']
+        verbose_name = "Employee Schedule"
+        verbose_name_plural = "Employee Schedules"
+        constraints = [
+            models.UniqueConstraint(
+                fields=['employee', 'weekday'],
+                name='unique_employee_schedule_weekday'
+            ),
+            models.CheckConstraint(
+                condition=models.Q(weekday__gte=1, weekday__lte=7),
+                name='employee_schedule_weekday_range'
+            )
+        ]
+        indexes = [
+            models.Index(fields=['employee', 'weekday']),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.weekday not in ISO_WEEKDAYS:
+            raise ValidationError("weekday must be an ISO weekday number between 1 and 7.")
+        if self.start_time and self.end_time and self.start_time > self.end_time:
+            raise ValidationError("start_time must not be later than end_time.")
+
+    def __str__(self):
+        return f"{self.employee.employee_id} - {ISO_WEEKDAYS[self.weekday]} ({self.day_type})"

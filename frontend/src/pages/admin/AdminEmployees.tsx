@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { apiClient, extractErrorMessage } from '../../lib/api';
+import { EmployeeScheduleEditor } from '../../components/EmployeeScheduleEditor';
 import { Employee, Project, Department } from '../../types';
 import {
   BANGLADESH_DIVISIONS,
@@ -1014,6 +1015,18 @@ export const AdminEmployees: React.FC<AdminEmployeesProps> = ({ initialTab }) =>
                   value={editFormData.designation}
                   onChange={(e) => setEditFormData({ ...editFormData, designation: e.target.value })}
                   className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              {/* Standing weekly duty pattern. Saves on its own so the employee
+                  profile form and the schedule are independent submissions. */}
+              <div className="pt-3 border-t border-slate-100">
+                <EmployeeScheduleEditor
+                  employeeId={editingEmployee.id}
+                  onSaved={(message) => {
+                    setSuccessMessage(message);
+                    setError(null);
+                  }}
                 />
               </div>
 

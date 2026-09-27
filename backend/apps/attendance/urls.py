@@ -8,11 +8,17 @@ from .views import (
     MyAttendanceCalendarView,
     AdminAttendanceViewSet,
     AttendanceSettingView,
-    AdminResetDutyView
+    AdminResetDutyView,
+    EmployeeScheduleViewSet
 )
 
 router = DefaultRouter()
 router.register(r'admin/all', AdminAttendanceViewSet, basename='admin_attendance')
+router.register(
+    r'admin/employee-schedule',
+    EmployeeScheduleViewSet,
+    basename='admin_employee_schedule'
+)
 
 urlpatterns = [
     # Field Assistant routes

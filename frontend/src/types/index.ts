@@ -169,16 +169,37 @@ export interface CalendarDayAttendance {
   check_out_time: string | null;
   check_out_display: string | null;
   working_duration_minutes: number | null;
-  working_duration_display: string | null;
+  working_duration_display: string;
+  /** 0 = on time, -1 = late. Null when there is nothing to judge. */
+  in_status: number | null;
+  /** Signed minutes vs the scheduled end; negative = late. Null if no check-out. */
+  out_offset_minutes: number | null;
   check_in_address: string;
   check_in_latitude: number | null;
   check_in_longitude: number | null;
   admin_remarks: string;
 }
 
+/** Duty pattern for one calendar day, as shown in the register's Schedule column. */
+export interface DaySchedule {
+  code: 'G' | 'WH' | 'X' | 'PH' | 'LV';
+  label: string;
+  /** Label text without the code prefix, e.g. 'Work from Home'. */
+  short_label: string;
+  name: string | null;
+  is_working: boolean;
+  start_time: string | null;
+  end_time: string | null;
+  source: 'SCHEDULE' | 'DEFAULT' | 'HOLIDAY' | 'LEAVE';
+}
+
 export interface CalendarDay {
   date: string;
+  day: number;
   weekday: string;
+  weekday_short: string;
+  schedule: DaySchedule;
+  remarks: string;
   is_today: boolean;
   is_future: boolean;
   day_has_ended: boolean;
@@ -196,8 +217,31 @@ export interface CalendarSummary {
   complete_days: number;
   missed_check_in: number;
   missed_check_out: number;
+  weekly_off_days: number;
+  holiday_days: number;
+  leave_days: number;
   total_working_minutes: number;
   total_working_display: string;
+}
+
+/** One editable weekday of an employee's standing duty pattern. */
+export interface ScheduleDay {
+  weekday: number;
+  weekday_name: string;
+  code: DaySchedule['code'];
+  label: string;
+  is_working: boolean;
+  start_time: string;
+  end_time: string;
+  configured: boolean;
+  source: 'SCHEDULE' | 'DEFAULT';
+}
+
+export interface EmployeeScheduleResponse {
+  employee_id: number;
+  employee_code: string;
+  employee_name: string;
+  days: ScheduleDay[];
 }
 
 export interface MyCalendarResponse {
@@ -206,6 +250,7 @@ export interface MyCalendarResponse {
   server_date: string;
   work_days: string;
   working_days_display: { number: number; name: string; enabled: boolean }[];
+  schedule: ScheduleDay[];
   summary: CalendarSummary;
   days: CalendarDay[];
 }

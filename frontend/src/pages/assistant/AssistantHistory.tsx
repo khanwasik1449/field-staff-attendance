@@ -1,19 +1,76 @@
 import React, { useState, useEffect } from 'react';
 import { apiClient, extractErrorMessage } from '../../lib/api';
-import { MyCalendarResponse, CalendarDay } from '../../types';
-import { StatusBadge } from '../../components/StatusBadge';
+import { MyCalendarResponse, CalendarDay, DaySchedule } from '../../types';
 import {
-  Calendar, ChevronLeft, ChevronRight, AlertCircle, MapPin,
-  FileQuestion, LogIn, LogOut, Clock3, CheckCircle2, Hourglass
+  Calendar, ChevronLeft, ChevronRight, AlertCircle,
+  FileQuestion, LogIn, LogOut, Hourglass, MapPin
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
-const formatDayLabel = (isoDate: string): string => {
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'
+];
+
+/** Renders an ISO date as the register's Calendar Day, e.g. 01-Sep-2026. */
+const formatCalendarDay = (isoDate: string): string => {
   const [y, m, d] = isoDate.split('-').map(Number);
   if (!y || !m || !d) return isoDate;
-  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-GB', {
-    day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC',
-  });
+  const month = MONTH_NAMES[m - 1].slice(0, 3);
+  return `${String(d).padStart(2, '0')}-${month}-${y}`;
+};
+
+/** Colour-codes the Schedule column chip by duty type. */
+const SCHEDULE_STYLES: Record<DaySchedule['code'], string> = {
+  G: 'bg-sky-50 text-sky-700 border-sky-200',
+  WH: 'bg-violet-50 text-violet-700 border-violet-200',
+  X: 'bg-slate-100 text-slate-500 border-slate-200',
+  PH: 'bg-amber-50 text-amber-700 border-amber-200',
+  LV: 'bg-teal-50 text-teal-700 border-teal-200',
+};
+
+const codeChip = (schedule: DaySchedule): React.ReactNode => {
+  const style = SCHEDULE_STYLES[schedule.code] ?? SCHEDULE_STYLES.X;
+  return (
+    <span className={`inline-block text-[10px] font-black uppercase px-1.5 py-0.5 rounded border ${style}`}>
+      {schedule.code}
+    </span>
+  );
+};
+
+/** Renders a row's manual correction action, or null when none is warranted. */
+const ActionCell: React.FC<{ day: CalendarDay }> = ({ day }) => {
+  if (day.pending_request_id !== null) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-2 py-1">
+        <Hourglass className="w-3 h-3 shrink-0" />
+        {day.pending_request_type === 'MISSED_CHECK_OUT' ? 'Out pending' : 'In pending'}
+      </span>
+    );
+  }
+  if (day.can_request_check_in) {
+    return (
+      <Link
+        to={`/assistant/requests?date=${day.date}&type=MISSED_CHECK_IN`}
+        className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wide text-white bg-rose-600 hover:bg-rose-700 rounded-lg px-2 py-1.5 min-h-[32px] transition-colors"
+      >
+        <LogIn className="w-3 h-3" />
+        Request In
+      </Link>
+    );
+  }
+  if (day.can_request_check_out) {
+    return (
+      <Link
+        to={`/assistant/requests?date=${day.date}&type=MISSED_CHECK_OUT`}
+        className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wide text-white bg-amber-600 hover:bg-amber-700 rounded-lg px-2 py-1.5 min-h-[32px] transition-colors"
+      >
+        <LogOut className="w-3 h-3" />
+        Request Out
+      </Link>
+    );
+  }
+  return <span className="text-slate-300 text-xs">&mdash;</span>;
 };
 
 export const AssistantHistory: React.FC = () => {
@@ -29,8 +86,8 @@ export const AssistantHistory: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      // The server owns the working-day calendar, so it also reports which
-      // working days are missing an entry entirely.
+      // The server owns the schedule, the working calendar and the lateness
+      // verdicts, so the client renders them without re-deriving anything.
       const res = await apiClient.get('/attendance/my-calendar/', {
         params: { month, year },
       });
@@ -45,11 +102,6 @@ export const AssistantHistory: React.FC = () => {
   useEffect(() => {
     fetchHistory();
   }, [month, year]);
-
-  const monthNames = [
-    'January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December'
-  ];
 
   const handlePrevMonth = () => {
     if (month === 1) {
@@ -70,18 +122,18 @@ export const AssistantHistory: React.FC = () => {
   };
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-6 space-y-5">
+    <div className="max-w-6xl mx-auto px-4 py-6 space-y-5">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-black text-slate-900">Attendance History</h1>
-          <p className="text-xs text-slate-500">Your personal verified attendance records</p>
+          <p className="text-xs text-slate-500">Your monthly attendance register</p>
         </div>
         <Link
           to="/assistant"
           className="text-xs font-semibold text-emerald-600 hover:text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-200"
         >
-          ← Back to Today
+          &larr; Back to Today
         </Link>
       </div>
 
@@ -95,7 +147,7 @@ export const AssistantHistory: React.FC = () => {
         </button>
         <div className="text-center font-bold text-slate-800 text-base flex items-center gap-2">
           <Calendar className="w-4 h-4 text-emerald-600" />
-          <span>{monthNames[month - 1]} {year}</span>
+          <span>{MONTH_NAMES[month - 1]} {year}</span>
         </div>
         <button
           onClick={handleNextMonth}
@@ -114,7 +166,11 @@ export const AssistantHistory: React.FC = () => {
 
       {/* Summary strip */}
       {data && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+          <div className="bg-white p-3 rounded-xl border border-slate-200 text-center">
+            <div className="text-lg font-black text-slate-800 font-mono">{data.summary.working_days}</div>
+            <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Working Days</div>
+          </div>
           <div className="bg-white p-3 rounded-xl border border-slate-200 text-center">
             <div className="text-lg font-black text-slate-800 font-mono">{data.summary.complete_days}</div>
             <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Complete</div>
@@ -135,154 +191,189 @@ export const AssistantHistory: React.FC = () => {
             </div>
             <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">No Check-Out</div>
           </div>
+          <div className="bg-white p-3 rounded-xl border border-slate-200 text-center">
+            <div className="text-lg font-black text-slate-800 font-mono">{data.summary.weekly_off_days}</div>
+            <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Weekly Offs</div>
+          </div>
         </div>
       )}
 
-      {/* Records List */}
       {loading ? (
         <div className="flex justify-center py-12">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-500"></div>
         </div>
       ) : !data || data.days.length === 0 ? (
         <div className="text-center py-12 bg-white rounded-2xl border border-slate-200 text-slate-400 text-sm">
-          No working days found for {monthNames[month - 1]} {year}.
+          No records found for {MONTH_NAMES[month - 1]} {year}.
         </div>
       ) : (
-        <div className="space-y-3">
-          {data.days.map((day: CalendarDay) => {
-            const att = day.attendance;
-            const hasIssue = Boolean(day.issue);
-            const isPending = day.pending_request_id !== null;
+        <>
+          {/* Desktop register: horizontally scrollable so all nine columns fit. */}
+          <div className="hidden lg:block bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200">
+                    {['Calendar Day', 'Day', 'Schedule', 'Check-IN Time', 'Check-OUT Time', 'Duration', 'IN', 'OUT', 'Remarks', 'Action'].map((h) => (
+                      <th
+                        key={h}
+                        className="px-3 py-3 text-[10px] font-black uppercase tracking-wider text-slate-500 whitespace-nowrap"
+                      >
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.days.map((day: CalendarDay) => {
+                    const att = day.attendance;
+                    const rowTone = day.pending_request_id !== null || day.issue
+                      ? 'bg-amber-50/50'
+                      : day.is_future
+                        ? 'bg-slate-50/60'
+                        : 'bg-white';
+                    return (
+                      <tr key={day.date} className={`${rowTone} border-b border-slate-100 last:border-0 hover:bg-slate-50`}>
+                        <td className="px-3 py-2.5 text-xs font-bold text-slate-800 font-mono whitespace-nowrap">
+                          {formatCalendarDay(day.date)}
+                          {day.is_today && (
+                            <span className="ml-1.5 text-[9px] font-black uppercase text-emerald-700 bg-emerald-100 px-1 py-0.5 rounded">
+                              Today
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5 text-[11px] text-slate-500 whitespace-nowrap">
+                          {day.weekday_short}
+                        </td>
+                        <td className="px-3 py-2.5 text-[11px] whitespace-nowrap">
+                          <span className="flex items-center gap-1.5">
+                            {codeChip(day.schedule)}
+                            <span className="text-slate-500">{day.schedule.short_label}</span>
+                          </span>
+                        </td>
+                        <td className="px-3 py-2.5 text-xs font-mono text-slate-700 whitespace-nowrap">
+                          {att?.check_in_display ?? <span className="text-slate-300">&mdash;</span>}
+                        </td>
+                        <td className="px-3 py-2.5 text-xs font-mono whitespace-nowrap">
+                          {att?.check_out_display
+                            ? <span className="text-slate-700">{att.check_out_display}</span>
+                            : att
+                              ? <span className="text-amber-600 font-bold">Missing</span>
+                              : <span className="text-slate-300">&mdash;</span>}
+                        </td>
+                        <td className="px-3 py-2.5 text-xs font-mono font-bold text-slate-800 whitespace-nowrap">
+                          {att?.working_duration_display && att.working_duration_display !== '--'
+                            ? att.working_duration_display
+                            : <span className="text-slate-300 font-normal">&mdash;</span>}
+                        </td>
+                        <td className="px-3 py-2.5 text-center whitespace-nowrap">
+                          {att?.in_status === 0
+                            ? <span className="text-emerald-600 font-black font-mono text-xs">0</span>
+                            : att?.in_status === -1
+                              ? <span className="text-rose-600 font-black font-mono text-xs">-1</span>
+                              : <span className="text-slate-300">&mdash;</span>}
+                        </td>
+                        <td className="px-3 py-2.5 text-center whitespace-nowrap">
+                          {att?.out_offset_minutes != null ? (
+                            <span className={`font-mono text-xs font-bold ${att.out_offset_minutes < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                              {att.out_offset_minutes > 0 ? '+' : ''}{att.out_offset_minutes}
+                            </span>
+                          ) : <span className="text-slate-300">&mdash;</span>}
+                        </td>
+                        <td className="px-3 py-2.5 text-[11px] text-slate-500 max-w-[200px]">
+                          {day.remarks || <span className="text-slate-300">&mdash;</span>}
+                          {att?.check_in_address && (
+                            <span className="flex items-center gap-1 text-[10px] text-slate-400 mt-0.5">
+                              <MapPin className="w-2.5 h-2.5 text-emerald-500 shrink-0" />
+                              <span className="truncate">{att.check_in_address}</span>
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5 whitespace-nowrap">
+                          <ActionCell day={day} />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
 
-            return (
-              <div
-                key={day.date}
-                className={`rounded-2xl border shadow-sm p-4 transition-colors ${
-                  hasIssue && !isPending
-                    ? 'border-amber-300 bg-amber-50/40'
-                    : day.is_future
-                      ? 'bg-white border-slate-200 opacity-60'
-                      : 'bg-white border-slate-200'
-                }`}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="space-y-1 min-w-0">
-                    <div className="text-xs font-bold text-slate-900 flex items-center gap-2 flex-wrap">
-                      <span>{formatDayLabel(day.date)}</span>
-                      <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
-                        {day.weekday.slice(0, 3)}
-                      </span>
+          {/* Mobile register: the same columns stacked per day. */}
+          <div className="lg:hidden space-y-2">
+            {data.days.map((day: CalendarDay) => {
+              const att = day.attendance;
+              return (
+                <div
+                  key={day.date}
+                  className={`bg-white rounded-xl border p-3 shadow-sm ${
+                    day.issue ? 'border-amber-300' : 'border-slate-200'
+                  } ${day.is_future ? 'opacity-60' : ''}`}
+                >
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-xs font-black font-mono text-slate-800">{formatCalendarDay(day.date)}</span>
+                      <span className="text-[10px] text-slate-400 font-semibold uppercase">{day.weekday_short}</span>
                       {day.is_today && (
-                        <span className="text-[9px] font-black uppercase tracking-wider text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded">
-                          Today
-                        </span>
+                        <span className="text-[9px] font-black uppercase text-emerald-700 bg-emerald-100 px-1 py-0.5 rounded">Today</span>
                       )}
-                      {att && <StatusBadge status={att.status} type={att.attendance_type} />}
                     </div>
-
-                    {att ? (
-                      <div className="text-xs text-slate-500 flex items-center gap-3 flex-wrap">
-                        <span className="flex items-center gap-1">
-                          <LogIn className="w-3 h-3 text-emerald-600" />
-                          In: <strong className="text-slate-700">{att.check_in_display || '--'}</strong>
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <LogOut className="w-3 h-3 text-rose-500" />
-                          Out:{' '}
-                          <strong className={att.check_out_display ? 'text-slate-700' : 'text-amber-600'}>
-                            {att.check_out_display || 'Missing'}
-                          </strong>
-                        </span>
-                      </div>
-                    ) : (
-                      <div className="text-xs text-slate-500">
-                        {day.is_future ? (
-                          <span className="flex items-center gap-1 text-slate-400">
-                            <Hourglass className="w-3 h-3" /> Upcoming working day
-                          </span>
-                        ) : (
-                          <span className="flex items-center gap-1 text-rose-600 font-semibold">
-                            <AlertCircle className="w-3 h-3" /> No attendance recorded
-                          </span>
-                        )}
-                      </div>
-                    )}
-
-                    {att?.check_in_address && (
-                      <div className="text-[11px] text-slate-600 flex items-center gap-1.5 flex-wrap pt-0.5">
-                        <MapPin className="w-3 h-3 text-emerald-600 shrink-0" />
-                        <span>{att.check_in_address}</span>
-                        {att.check_in_latitude != null && att.check_in_longitude != null && (
-                          <a
-                            href={`https://www.google.com/maps?q=${att.check_in_latitude},${att.check_in_longitude}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-600 hover:underline font-semibold"
-                          >
-                            (Map)
-                          </a>
-                        )}
-                      </div>
-                    )}
-
-                    {att?.admin_remarks && (
-                      <div className="text-[11px] text-slate-400 italic">Note: {att.admin_remarks}</div>
-                    )}
+                    {codeChip(day.schedule)}
                   </div>
 
-                  {att && (
-                    <div className="text-right shrink-0">
-                      <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
-                        Duration
+                  <div className="text-[11px] text-slate-500 mb-2">{day.schedule.label}</div>
+
+                  <div className="grid grid-cols-4 gap-1 text-center">
+                    <div>
+                      <div className="text-[9px] uppercase text-slate-400 font-semibold">IN</div>
+                      <div className="text-[11px] font-mono font-bold text-slate-700">{att?.check_in_display ?? '—'}</div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] uppercase text-slate-400 font-semibold">OUT</div>
+                      <div className={`text-[11px] font-mono font-bold ${att && !att.check_out_display ? 'text-amber-600' : 'text-slate-700'}`}>
+                        {att?.check_out_display ?? (att ? 'Missing' : '—')}
                       </div>
-                      <div className="text-base font-extrabold text-slate-800 font-mono flex items-center gap-1 justify-end">
-                        <Clock3 className="w-3.5 h-3.5 text-slate-400" />
-                        {att.working_duration_display || '--'}
+                    </div>
+                    <div>
+                      <div className="text-[9px] uppercase text-slate-400 font-semibold">Duration</div>
+                      <div className="text-[11px] font-mono font-bold text-slate-800">
+                        {att?.working_duration_display && att.working_duration_display !== '--' ? att.working_duration_display : '—'}
                       </div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] uppercase text-slate-400 font-semibold">In/Out</div>
+                      <div className="text-[11px] font-mono font-bold">
+                        <span className={att?.in_status === -1 ? 'text-rose-600' : 'text-emerald-600'}>
+                          {att?.in_status ?? '—'}
+                        </span>
+                        <span className="text-slate-300"> / </span>
+                        <span className={(att?.out_offset_minutes ?? 0) < 0 ? 'text-rose-600' : 'text-emerald-600'}>
+                          {att?.out_offset_minutes != null
+                            ? `${att.out_offset_minutes > 0 ? '+' : ''}${att.out_offset_minutes}`
+                            : '—'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {day.remarks && (
+                    <div className="text-[10px] text-slate-400 italic mt-2 flex items-start gap-1">
+                      <FileQuestion className="w-2.5 h-2.5 shrink-0 mt-0.5" />
+                      <span>{day.remarks}</span>
+                    </div>
+                  )}
+
+                  {(day.issue || day.pending_request_id !== null) && (
+                    <div className="mt-2 pt-2 border-t border-slate-100">
+                      <ActionCell day={day} />
                     </div>
                   )}
                 </div>
-
-                {/* Manual correction actions - only on days that actually need one */}
-                {hasIssue && (
-                  <div className="mt-3 pt-3 border-t border-slate-200/80">
-                    {isPending ? (
-                      <div className="flex items-center gap-2 text-[11px] font-semibold text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
-                        <Hourglass className="w-3.5 h-3.5 shrink-0" />
-                        {day.pending_request_type === 'MISSED_CHECK_OUT'
-                          ? 'Manual check-out requested'
-                          : 'Manual check-in requested'}
-                        {' '}- awaiting admin review
-                      </div>
-                    ) : day.can_request_check_in ? (
-                      <Link
-                        to={`/assistant/requests?date=${day.date}&type=MISSED_CHECK_IN`}
-                        className="flex items-center justify-center gap-2 w-full min-h-[44px] px-3 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-black uppercase tracking-wide shadow-sm transition-colors"
-                      >
-                        <LogIn className="w-4 h-4" />
-                        Request Missed Check-In
-                      </Link>
-                    ) : day.can_request_check_out ? (
-                      <Link
-                        to={`/assistant/requests?date=${day.date}&type=MISSED_CHECK_OUT`}
-                        className="flex items-center justify-center gap-2 w-full min-h-[44px] px-3 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-black uppercase tracking-wide shadow-sm transition-colors"
-                      >
-                        <LogOut className="w-4 h-4" />
-                        Request Manual Check-Out
-                      </Link>
-                    ) : null}
-                  </div>
-                )}
-
-                {att && day.issue === null && !isPending && (
-                  <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700">
-                    <CheckCircle2 className="w-3.5 h-3.5" /> Duty day complete
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );

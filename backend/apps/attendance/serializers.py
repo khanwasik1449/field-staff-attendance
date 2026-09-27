@@ -1,5 +1,7 @@
 from rest_framework import serializers
-from .models import Attendance, AttendanceSetting, ISO_WEEKDAYS, parse_work_days
+from .models import (
+    Attendance, AttendanceSetting, EmployeeSchedule, ISO_WEEKDAYS, parse_work_days
+)
 from .services import format_time_display, format_duration_display
 
 class AttendanceSettingSerializer(serializers.ModelSerializer):
@@ -85,3 +87,35 @@ class AttendanceSerializer(serializers.ModelSerializer):
 
     def get_working_duration_display(self, obj):
         return format_duration_display(obj.working_duration_minutes)
+
+
+class EmployeeScheduleSerializer(serializers.Serializer):
+    """
+    Write payload for one weekday of an employee's standing duty pattern.
+    Validated here so malformed times or unknown day types are rejected before
+    they reach the service layer.
+    """
+    weekday = serializers.IntegerField(min_value=1, max_value=7)
+    day_type = serializers.ChoiceField(choices=EmployeeSchedule.DayType.choices)
+    start_time = serializers.TimeField(required=False, allow_null=True, default=None)
+    end_time = serializers.TimeField(required=False, allow_null=True, default=None)
+
+    def validate(self, attrs):
+        start, end = attrs.get('start_time'), attrs.get('end_time')
+        if start and end and start > end:
+            raise serializers.ValidationError({
+                'end_time': 'End time must not be earlier than start time.'
+            })
+        return attrs
+
+
+class EmployeeScheduleBulkSerializer(serializers.Serializer):
+    """Write payload for replacing an employee's whole weekly pattern."""
+    employee_id = serializers.IntegerField(required=False, allow_null=True, default=None)
+    days = EmployeeScheduleSerializer(many=True)
+
+    def validate_days(self, value):
+        seen = [row['weekday'] for row in value]
+        if len(seen) != len(set(seen)):
+            raise serializers.ValidationError('Each weekday may appear only once.')
+        return value

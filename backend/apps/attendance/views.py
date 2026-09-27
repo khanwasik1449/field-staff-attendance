@@ -6,7 +6,9 @@ from rest_framework.exceptions import ValidationError
 from django.shortcuts import get_object_or_404
 from django.db.models import Q
 from .models import Attendance, AttendanceSetting
+from .schedule_services import ScheduleService
 from .serializers import (
+    EmployeeScheduleBulkSerializer,
     AttendanceSerializer,
     AttendanceSettingSerializer,
     CheckInRequestSerializer,
@@ -252,3 +254,63 @@ class AdminResetDutyView(APIView):
             'count': count
         }, status=status.HTTP_200_OK)
 
+
+class EmployeeScheduleViewSet(viewsets.ViewSet):
+    """
+    Admin CRUD for an employee's standing weekly duty pattern.
+
+    Exposes the same shape for every verb so the admin UI can render a single
+    editable week: GET returns the effective seven-day pattern (including
+    company-default rows), PUT replaces the stored rows, DELETE resets the
+    employee back to the company working week.
+    """
+    permission_classes = [IsAdmin]
+    serializer_class = EmployeeScheduleBulkSerializer
+
+    def _get_employee(self, pk):
+        return get_object_or_404(Employee, pk=pk)
+
+    def _serialize(self, employee):
+        return {
+            'employee_id': employee.pk,
+            'employee_code': employee.employee_id,
+            'employee_name': employee.user.get_full_name(),
+            'days': ScheduleService.get_weekly_rows(employee),
+        }
+
+    def list(self, request):
+        """Returns the effective pattern for every active employee."""
+        employees = Employee.objects.filter(is_active=True).select_related('user')
+        return Response({'employees': [self._serialize(e) for e in employees]})
+
+    def retrieve(self, request, pk=None):
+        employee = self._get_employee(pk)
+        return Response(self._serialize(employee))
+
+    def create(self, request):
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        employee = get_object_or_404(
+            Employee, pk=serializer.validated_data.get('employee_id')
+        )
+        try:
+            ScheduleService.save_weekly(
+                employee, serializer.validated_data['days'], admin_user=request.user
+            )
+        except ValueError as exc:
+            raise ValidationError({'detail': str(exc)})
+        return Response(
+            {'detail': f"Schedule updated for {employee.employee_id}.", **self._serialize(employee)},
+            status=status.HTTP_200_OK,
+        )
+
+    def update(self, request, pk=None, partial=False):
+        return self.create(request)
+
+    def destroy(self, request, pk=None):
+        employee = self._get_employee(pk)
+        ScheduleService.reset_to_defaults(employee, admin_user=request.user)
+        return Response({
+            'detail': f"Schedule reset to company defaults for {employee.employee_id}.",
+            **self._serialize(employee),
+        })

@@ -1,4 +1,5 @@
 import pytest
+import calendar
 from datetime import datetime, date, timedelta, time
 from django.core.exceptions import ValidationError
 from django.utils import timezone
@@ -883,19 +884,41 @@ class TestFAMSCore:
         assert entry['can_request_check_in'] is True
         assert entry['can_request_check_out'] is False
 
-    def test_calendar_excludes_non_working_days_and_future_days(self):
+    def test_calendar_lists_every_day_and_offers_requests_only_on_working_days(self):
+        """
+        The register shows the whole month, so weekly offs and holidays are
+        present as rows rather than omitted. A manual attendance request is only
+        ever offered for a day the employee actually owed duty for.
+        """
         self._set_work_days('1,2,3,4,5')
         today = get_dhaka_date()
         cal = AttendanceService.get_monthly_calendar(self.employee, today.year, today.month)
 
+        setting = AttendanceSetting.get_active()
+        expected_days = calendar.monthrange(today.year, today.month)[1]
+        assert len(cal['days']) == expected_days, (
+            "every calendar day of the month must be listed, not only working days"
+        )
+
+        working_seen = 0
         for entry in cal['days']:
             parsed = datetime.strptime(entry['date'], '%Y-%m-%d').date()
-            assert AttendanceSetting.get_active().is_working_day(parsed), (
-                f"{parsed} should not be listed as a working day"
-            )
+            is_working = setting.is_working_day(parsed)
+            assert entry['schedule']['is_working'] is is_working
+
+            if is_working:
+                working_seen += 1
+            else:
+                # A day the employee did not owe duty for is never claimable.
+                assert entry['issue'] is None, f"{parsed} is not a working day"
+                assert entry['can_request_check_in'] is False
+                assert entry['can_request_check_out'] is False
+
             if parsed > today:
                 assert entry['is_future'] is True
                 assert entry['issue'] is None
+
+        assert working_seen > 0, "expected at least one working day in the current month"
 
     def test_calendar_flags_missing_check_out_and_clears_after_approval(self):
         self._set_work_days('1,2,3,4,5')

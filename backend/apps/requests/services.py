@@ -5,6 +5,7 @@ from rest_framework import exceptions, serializers
 
 from .models import ManualAttendanceRequest
 from apps.attendance.models import Attendance, AttendanceSetting
+from apps.attendance.schedule_services import ScheduleService
 from apps.attendance.services import (
     ConflictException,
     get_dhaka_datetime,
@@ -59,9 +60,11 @@ class ManualRequestService:
         ).first()
 
         if request_type == ManualAttendanceRequest.RequestType.MISSED_CHECK_IN:
-            if not setting.is_working_day(attendance_date):
+            # Resolved from the employee's own schedule, not the company-wide
+            # working week, so a weekly off or holiday day is never claimable.
+            if not ScheduleService.is_working_day(employee, attendance_date, setting=setting):
                 raise serializers.ValidationError(
-                    {"detail": f"{attendance_date.strftime('%A')} is not a configured working day, so no check-in was missed."}
+                    {"detail": f"{attendance_date.strftime('%A')} is not a working day in your schedule, so no check-in was missed."}
                 )
             if existing_attendance is not None:
                 raise ConflictException(
