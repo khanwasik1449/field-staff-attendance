@@ -29,6 +29,21 @@ export interface Employee {
   role?: UserRole;
 }
 
+export interface MeSettings {
+  work_start_time: string;
+  work_end_time: string;
+  late_grace_minutes: number;
+  timezone: string;
+  require_gps: boolean;
+  enforce_geofence: boolean;
+}
+
+export interface MeResponse {
+  user: User;
+  employee: Employee | null;
+  settings: MeSettings;
+}
+
 export interface Project {
   id: number;
   name: string;

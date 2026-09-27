@@ -164,6 +164,13 @@ class AttendanceService:
             # No perimeter limitation: field assistants can record attendance from anywhere without perimeter violation flags
             is_geofence_violation = False
 
+        # Resolve human-readable address BEFORE opening the transaction. Reverse
+        # geocoding is an outbound HTTP call (up to 2.5s) and must never run while
+        # the select_for_update() row lock is held, or it serialises concurrent punches.
+        check_in_addr = (address or "").strip()
+        if not check_in_addr and latitude is not None and longitude is not None:
+            check_in_addr = get_reverse_geocoded_address(latitude, longitude)
+
         with transaction.atomic():
             existing = (
                 Attendance.objects
@@ -192,11 +199,6 @@ class AttendanceService:
                 if current_time > cutoff_time
                 else Attendance.Status.PRESENT
             )
-
-            # Resolve human-readable address from coordinates
-            check_in_addr = (address or "").strip()
-            if not check_in_addr and latitude is not None and longitude is not None:
-                check_in_addr = get_reverse_geocoded_address(latitude, longitude)
 
             attendance = Attendance.objects.create(
                 employee=employee,
@@ -285,6 +287,13 @@ class AttendanceService:
             # No perimeter limitation: field assistants can record attendance from anywhere without perimeter violation flags
             is_geofence_violation = False
 
+        # Resolve human-readable address BEFORE opening the transaction. Reverse
+        # geocoding is an outbound HTTP call (up to 2.5s) and must never run while
+        # the select_for_update() row lock is held, or it serialises concurrent punches.
+        check_out_addr = (address or "").strip()
+        if not check_out_addr and latitude is not None and longitude is not None:
+            check_out_addr = get_reverse_geocoded_address(latitude, longitude)
+
         with transaction.atomic():
             attendance = (
                 Attendance.objects
@@ -307,11 +316,6 @@ class AttendanceService:
             # Calculate working duration in minutes
             duration_seconds = max(0, (dhaka_now - attendance.check_in_time).total_seconds())
             duration_minutes = int(round(duration_seconds / 60))
-
-            # Resolve human-readable address from coordinates
-            check_out_addr = (address or "").strip()
-            if not check_out_addr and latitude is not None and longitude is not None:
-                check_out_addr = get_reverse_geocoded_address(latitude, longitude)
 
             attendance.check_out_time = dhaka_now
             attendance.working_duration_minutes = duration_minutes

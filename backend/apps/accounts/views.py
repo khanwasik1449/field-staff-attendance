@@ -63,6 +63,8 @@ class CurrentUserView(APIView):
                 'work_end_time': str(setting.work_end_time),
                 'late_grace_minutes': setting.late_grace_minutes,
                 'timezone': setting.timezone,
+                'require_gps': setting.require_gps,
+                'enforce_geofence': setting.enforce_geofence,
             }
         })
 

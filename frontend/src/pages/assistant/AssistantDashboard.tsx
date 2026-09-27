@@ -23,7 +23,7 @@ import {
 import { Link } from 'react-router-dom';
 
 export const AssistantDashboard: React.FC = () => {
-  const { employee } = useAuth();
+  const { employee, requireGps } = useAuth();
   const [data, setData] = useState<TodayAttendanceResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
@@ -72,6 +72,11 @@ export const AssistantDashboard: React.FC = () => {
   };
 
   const getCoordinates = (): Promise<{ latitude?: number; longitude?: number; accuracy?: number }> => {
+    // GPS is disabled by default in the server-authoritative settings. Never touch
+    // the geolocation API in that case: no browser permission prompt, no 8s stall.
+    if (!requireGps) {
+      return Promise.resolve({});
+    }
     return new Promise((resolve) => {
       if (!('geolocation' in navigator)) {
         resolve({});
@@ -94,14 +99,16 @@ export const AssistantDashboard: React.FC = () => {
     });
   };
 
-  const handleCheckIn = async () => {
+  const punch = async (endpoint: 'check-in' | 'check-out') => {
     setFeedback(null);
     setActionLoading(true);
-    setActionStep('Acquiring real GPS coordinates...');
+    setActionStep(requireGps ? 'Acquiring real GPS coordinates...' : 'Recording on server (Asia/Dhaka)...');
     try {
       const coords = await getCoordinates();
-      setActionStep('Recording check-in on server (Asia/Dhaka)...');
-      const res = await apiClient.post('/attendance/check-in/', coords);
+      if (requireGps) {
+        setActionStep('Recording on server (Asia/Dhaka)...');
+      }
+      const res = await apiClient.post(`/attendance/${endpoint}/`, coords);
       setFeedback({ type: 'success', message: res.data.detail });
       await fetchTodayStatus();
     } catch (err) {
@@ -112,23 +119,8 @@ export const AssistantDashboard: React.FC = () => {
     }
   };
 
-  const handleCheckOut = async () => {
-    setFeedback(null);
-    setActionLoading(true);
-    setActionStep('Acquiring real GPS coordinates...');
-    try {
-      const coords = await getCoordinates();
-      setActionStep('Recording check-out on server (Asia/Dhaka)...');
-      const res = await apiClient.post('/attendance/check-out/', coords);
-      setFeedback({ type: 'success', message: res.data.detail });
-      await fetchTodayStatus();
-    } catch (err) {
-      setFeedback({ type: 'error', message: extractErrorMessage(err) });
-    } finally {
-      setActionLoading(false);
-      setActionStep('');
-    }
-  };
+  const handleCheckIn = () => punch('check-in');
+  const handleCheckOut = () => punch('check-out');
 
   if (loading) {
     return (
@@ -189,7 +181,7 @@ export const AssistantDashboard: React.FC = () => {
       </div>
 
       {/* HTTPS Notice for Mobile GPS (if viewing on insecure HTTP) */}
-      {isHttp && (
+      {isHttp && requireGps && (
         <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-2xl text-xs text-amber-950 flex items-center justify-between gap-2 shadow-xs">
           <div className="flex items-center gap-2">
             <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
@@ -501,6 +493,20 @@ export const AssistantDashboard: React.FC = () => {
                   </span>
                 </div>
               )}
+          </div>
+        )}
+
+          {/* GPS disabled by administrator: explain the absent location cards */}
+          {!requireGps && (
+            <div className="p-3 sm:p-3.5 rounded-2xl bg-slate-50 border border-slate-200 text-left text-xs shadow-2xs">
+              <span className="font-bold text-slate-700 flex items-center gap-1.5 text-xs">
+                <Navigation className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                Location Tracking Disabled
+              </span>
+              <p className="text-slate-500 mt-1 leading-relaxed">
+                GPS capture is turned off by your administrator, so no coordinates or address are
+                recorded with your attendance. Contact an administrator if this is incorrect.
+              </p>
             </div>
           )}
         </div>

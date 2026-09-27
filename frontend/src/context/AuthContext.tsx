@@ -1,10 +1,12 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { User, Employee } from '../types';
+import { User, Employee, MeResponse, MeSettings } from '../types';
 import { apiClient, extractErrorMessage } from '../lib/api';
 
 interface AuthContextType {
   user: User | null;
   employee: Employee | null;
+  settings: MeSettings | null;
+  requireGps: boolean;
   isAuthenticated: boolean;
   isAdmin: boolean;
   isFieldAssistant: boolean;
@@ -25,24 +27,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const saved = localStorage.getItem('fams_employee');
     return saved ? JSON.parse(saved) : null;
   });
+  const [settings, setSettings] = useState<MeSettings | null>(null);
   const [loading, setLoading] = useState(true);
 
   const refreshMe = async () => {
     const token = localStorage.getItem('fams_access_token');
     if (!token) {
+      setUser(null);
+      setEmployee(null);
+      setSettings(null);
       setLoading(false);
       return;
     }
     try {
-      const res = await apiClient.get('/auth/me/');
+      const res = await apiClient.get<MeResponse>('/auth/me/');
       setUser(res.data.user);
       setEmployee(res.data.employee);
+      setSettings(res.data.settings);
       localStorage.setItem('fams_user', JSON.stringify(res.data.user));
       if (res.data.employee) {
         localStorage.setItem('fams_employee', JSON.stringify(res.data.employee));
       }
     } catch {
-      // Token might be invalid
+      // Session is not usable. Drop the cached identity so no page renders
+      // against a dead session while the interceptor redirects to /login.
+      setUser(null);
+      setEmployee(null);
+      setSettings(null);
     } finally {
       setLoading(false);
     }
@@ -66,6 +77,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       setUser(userData);
       setEmployee(empData);
+      // Hydrate the server-authoritative settings (GPS flags, shift rules) before
+      // the assistant lands on the punch screen, so the first check-in already
+      // knows whether location capture is required.
+      await refreshMe();
       return { success: true };
     } catch (err) {
       return { success: false, error: extractErrorMessage(err) };
@@ -83,17 +98,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch {}
     setUser(null);
     setEmployee(null);
+    setSettings(null);
     window.location.href = '/login';
   };
 
   const isAdmin = user?.role === 'ADMIN';
   const isFieldAssistant = user?.role === 'FIELD_ASSISTANT';
+  const requireGps = settings?.require_gps ?? false;
 
   return (
     <AuthContext.Provider
       value={{
         user,
         employee,
+        settings,
+        requireGps,
         isAuthenticated: !!user,
         isAdmin,
         isFieldAssistant,
