@@ -495,20 +495,6 @@ export const AssistantDashboard: React.FC = () => {
               )}
           </div>
         )}
-
-          {/* GPS disabled by administrator: explain the absent location cards */}
-          {!requireGps && (
-            <div className="p-3 sm:p-3.5 rounded-2xl bg-slate-50 border border-slate-200 text-left text-xs shadow-2xs">
-              <span className="font-bold text-slate-700 flex items-center gap-1.5 text-xs">
-                <Navigation className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                Location Tracking Disabled
-              </span>
-              <p className="text-slate-500 mt-1 leading-relaxed">
-                GPS capture is turned off by your administrator, so no coordinates or address are
-                recorded with your attendance. Contact an administrator if this is incorrect.
-              </p>
-            </div>
-          )}
         </div>
 
         {/* Server Clock Authority Notice */}
