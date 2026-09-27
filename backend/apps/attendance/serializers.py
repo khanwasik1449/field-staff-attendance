@@ -1,18 +1,33 @@
 from rest_framework import serializers
-from .models import Attendance, AttendanceSetting
+from .models import Attendance, AttendanceSetting, ISO_WEEKDAYS, parse_work_days
 from .services import format_time_display, format_duration_display
 
 class AttendanceSettingSerializer(serializers.ModelSerializer):
+    work_days_display = serializers.SerializerMethodField()
+
     class Meta:
         model = AttendanceSetting
         fields = [
             'id', 'work_start_time', 'work_end_time',
+            'work_days', 'work_days_display',
             'late_grace_minutes', 'half_day_minimum_minutes',
             'full_day_minimum_minutes', 'timezone',
             'require_gps', 'enforce_geofence',
             'is_active', 'updated_at'
         ]
         read_only_fields = ['id', 'updated_at']
+
+    def get_work_days_display(self, obj):
+        days = obj.working_weekdays
+        return [
+            {'number': num, 'name': name, 'enabled': num in days}
+            for num, name in ISO_WEEKDAYS.items()
+        ]
+
+    def validate_work_days(self, value):
+        # Raises ValidationError for malformed input before it reaches the DB.
+        parse_work_days(value)
+        return value
 
 
 class CheckInRequestSerializer(serializers.Serializer):

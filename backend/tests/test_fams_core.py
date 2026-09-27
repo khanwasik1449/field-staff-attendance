@@ -1,25 +1,31 @@
 import pytest
 from datetime import datetime, date, timedelta, time
+from django.core.exceptions import ValidationError
 from django.utils import timezone
 from django.urls import reverse
 from rest_framework.test import APIClient
+from rest_framework import serializers as drf_serializers
 from rest_framework import status
 
 from apps.accounts.models import User, Department, Project, Employee
 from apps.attendance.models import Attendance, AttendanceSetting
 from apps.requests.models import ManualAttendanceRequest
+from apps.requests.services import ManualRequestService
 from apps.audit.models import AuditLog
-from apps.attendance.services import get_dhaka_datetime, get_dhaka_date, AttendanceService
+from apps.attendance.services import (
+    get_dhaka_datetime, get_dhaka_date, AttendanceService, ConflictException
+)
 
 @pytest.mark.django_db
 class TestFAMSCore:
     def setup_method(self):
         self.client = APIClient()
-
         # Setting
         self.setting = AttendanceSetting.get_active()
         self.setting.work_start_time = time(9, 0, 0)
         self.setting.late_grace_minutes = 15
+        # Pin the working-day calendar so tests do not depend on the real weekday.
+        self.setting.work_days = '1,2,3,4,5'
         self.setting.save()
 
         # Department
@@ -131,15 +137,33 @@ class TestFAMSCore:
         res3 = self.client.get('/api/v1/admin/audit-logs/')
         assert res3.status_code == status.HTTP_403_FORBIDDEN
 
+    def _last_working_day(self, offset_days_back=0):
+        """Most recent configured working day, skipping back over non-working days."""
+        setting = AttendanceSetting.get_active()
+        day = get_dhaka_date() - timedelta(days=offset_days_back)
+        for _ in range(14):
+            if setting.is_working_day(day):
+                return day
+            day -= timedelta(days=1)
+        raise AssertionError("no working day found in 14 days")
+
+    def _at(self, day, hhmm):
+        """Timezone-aware timestamp for `hhmm` (e.g. '09:00') on the given day."""
+        return timezone.make_aware(
+            datetime.combine(day, datetime.strptime(hhmm, '%H:%M').time()),
+            timezone.get_current_timezone()
+        )
+
     def test_manual_attendance_workflow(self):
         self.client.force_authenticate(user=self.user_fa)
-        yesterday = get_dhaka_date() - timedelta(days=1)
-        check_in = timezone.now() - timedelta(days=1, hours=8)
-        check_out = timezone.now() - timedelta(days=1)
+        # Must be a working day: nothing was missed on a non-working day.
+        duty_day = self._last_working_day(1)
+        check_in = self._at(duty_day, '09:00')
+        check_out = self._at(duty_day, '17:00')
 
         # 1. Submit manual request
         res = self.client.post('/api/v1/manual-requests/', {
-            'attendance_date': str(yesterday),
+            'attendance_date': str(duty_day),
             'requested_check_in': check_in.isoformat(),
             'requested_check_out': check_out.isoformat(),
             'reason': 'Surveying in remote region without cellular data connectivity.'
@@ -149,7 +173,7 @@ class TestFAMSCore:
 
         # 2. Prevent duplicate pending request
         res_dup = self.client.post('/api/v1/manual-requests/', {
-            'attendance_date': str(yesterday),
+            'attendance_date': str(duty_day),
             'requested_check_in': check_in.isoformat(),
             'requested_check_out': check_out.isoformat(),
             'reason': 'Another reason.'
@@ -164,7 +188,7 @@ class TestFAMSCore:
         assert res_approve.status_code == status.HTTP_200_OK
 
         # Verify Attendance record was created with MANUAL type
-        att = Attendance.objects.get(employee=self.employee, attendance_date=yesterday)
+        att = Attendance.objects.get(employee=self.employee, attendance_date=duty_day)
         assert att.attendance_type == Attendance.Type.MANUAL
         assert att.approved_by == self.admin
         assert "Approved after supervisor" in att.admin_remarks
@@ -702,18 +726,12 @@ class TestFAMSCore:
         behind the current Asia/Dhaka date, and the warning clears once an admin
         closes it.
         """
-        from datetime import time as _time
-
-        # Duty day = yesterday, checked in but never checked out.
-        yesterday = get_dhaka_date() - timedelta(days=1)
-        yesterday_9am = timezone.make_aware(
-            datetime.combine(yesterday, _time(9, 0, 0)),
-            timezone.get_current_timezone()
-        )
+        # Duty day = most recent working day, checked in but never checked out.
+        duty_day = self._last_working_day(1)
         stale = Attendance.objects.create(
             employee=self.employee,
-            attendance_date=yesterday,
-            check_in_time=yesterday_9am,
+            attendance_date=duty_day,
+            check_in_time=self._at(duty_day, '09:00'),
             attendance_type=Attendance.Type.AUTOMATIC,
             status=Attendance.Status.INCOMPLETE
         )
@@ -722,7 +740,7 @@ class TestFAMSCore:
         missed = summary['missed_checkout']
         assert missed is not None
         assert missed['count'] == 1
-        assert missed['attendance_date'] == str(yesterday)
+        assert missed['attendance_date'] == str(duty_day)
         assert missed['attendance_id'] == stale.id
         assert missed['check_in_display']
 
@@ -730,7 +748,7 @@ class TestFAMSCore:
         headers = {'HTTP_AUTHORIZATION': 'Bearer ' + self._fa_access()}
         res = self.client.get('/api/v1/attendance/today/', **headers)
         assert res.status_code == status.HTTP_200_OK
-        assert res.data['missed_checkout']['attendance_date'] == str(yesterday)
+        assert res.data['missed_checkout']['attendance_date'] == str(duty_day)
 
         # Once the record is closed the warning disappears.
         stale.check_out_time = timezone.now()
@@ -740,12 +758,13 @@ class TestFAMSCore:
 
     def test_missed_checkout_counts_all_outstanding_days(self):
         """Multiple unclosed duty days are reported with an accurate count."""
-        for offset in (1, 2):
-            day = get_dhaka_date() - timedelta(days=offset)
+        # Two distinct working days, so the count is genuinely 2.
+        days = [self._last_working_day(1), self._last_working_day(3)]
+        for day in days:
             Attendance.objects.create(
                 employee=self.employee,
                 attendance_date=day,
-                check_in_time=timezone.now(),
+                check_in_time=self._at(day, '09:00'),
                 attendance_type=Attendance.Type.AUTOMATIC,
                 status=Attendance.Status.INCOMPLETE
             )
@@ -754,7 +773,7 @@ class TestFAMSCore:
         assert missed is not None
         assert missed['count'] == 2
         # The most recent outstanding day is reported first.
-        assert missed['attendance_date'] == str(get_dhaka_date() - timedelta(days=1))
+        assert missed['attendance_date'] == str(days[0])
 
     def test_missed_checkout_is_scoped_to_own_records(self):
         """An assistant is only ever warned about their own unclosed duty days."""
@@ -772,13 +791,297 @@ class TestFAMSCore:
             phone="+8801700000099",
             is_active=True
         )
+        other_day = self._last_working_day(1)
         Attendance.objects.create(
             employee=other.employee_profile,
-            attendance_date=get_dhaka_date() - timedelta(days=1),
-            check_in_time=timezone.now(),
+            attendance_date=other_day,
+            check_in_time=self._at(other_day, '09:00'),
             attendance_type=Attendance.Type.AUTOMATIC,
             status=Attendance.Status.INCOMPLETE
         )
 
         assert AttendanceService.get_missed_checkout(self.employee) is None
         assert AttendanceService.get_missed_checkout(other.employee_profile) is not None
+
+    # ------------------------------------------------------------------
+    # Working-day calendar + two-type manual attendance requests
+    # ------------------------------------------------------------------
+
+    def _set_work_days(self, raw):
+        setting = AttendanceSetting.get_active()
+        setting.work_days = raw
+        setting.save()
+        return setting
+
+    def _make_unclosed_day(self, day, hour=9):
+        from datetime import time as _time
+        return Attendance.objects.create(
+            employee=self.employee,
+            attendance_date=day,
+            check_in_time=timezone.make_aware(
+                datetime.combine(day, _time(hour, 0)), timezone.get_current_timezone()
+            ),
+            attendance_type=Attendance.Type.AUTOMATIC,
+            status=Attendance.Status.INCOMPLETE
+        )
+
+    def test_work_days_parsing_and_working_day_predicate(self):
+        setting = self._set_work_days('1,2,3,4,5')
+        assert setting.working_weekdays == (1, 2, 3, 4, 5)
+        # 2026-09-25 is a Friday, 2026-09-26 Saturday, 2026-09-27 Sunday.
+        assert setting.is_working_day(date(2026, 9, 25))
+        assert not setting.is_working_day(date(2026, 9, 26))
+        assert not setting.is_working_day(date(2026, 9, 27))
+
+        # A six-day week is honoured when configured.
+        setting = self._set_work_days('1,2,3,4,5,6')
+        assert setting.is_working_day(date(2026, 9, 26))
+        assert not setting.is_working_day(date(2026, 9, 27))
+
+    def test_malformed_work_days_is_rejected(self):
+        """
+        The working-day calendar is business-critical, so a malformed list must
+        never be accepted. Field validators enforce this on full_clean(), and the
+        settings serializer enforces it on every API write.
+        """
+        setting = AttendanceSetting.get_active()
+        for bad in ('1,2,x', '9', '1,2,3,4,5,6,7,8'):
+            setting.work_days = bad
+            with pytest.raises(ValidationError):
+                setting.full_clean()
+        # A well-formed list still passes.
+        setting.work_days = '1,2,3,4,5,6'
+        setting.full_clean()
+
+    def test_calendar_flags_missing_check_in_on_past_working_days(self):
+        self._set_work_days('1,2,3,4,5')
+        day = self._last_working_day(1)
+        # Ensure a clean slate for that day.
+        Attendance.objects.filter(employee=self.employee, attendance_date=day).delete()
+        ManualAttendanceRequest.objects.filter(
+            employee=self.employee, attendance_date=day
+        ).delete()
+
+        cal = AttendanceService.get_monthly_calendar(self.employee, day.year, day.month)
+        entry = next(d for d in cal['days'] if d['date'] == str(day))
+
+        assert entry['attendance'] is None
+        assert entry['issue'] == 'MISSED_CHECK_IN'
+        assert entry['can_request_check_in'] is True
+        assert entry['can_request_check_out'] is False
+
+    def test_calendar_excludes_non_working_days_and_future_days(self):
+        self._set_work_days('1,2,3,4,5')
+        today = get_dhaka_date()
+        cal = AttendanceService.get_monthly_calendar(self.employee, today.year, today.month)
+
+        for entry in cal['days']:
+            parsed = datetime.strptime(entry['date'], '%Y-%m-%d').date()
+            assert AttendanceSetting.get_active().is_working_day(parsed), (
+                f"{parsed} should not be listed as a working day"
+            )
+            if parsed > today:
+                assert entry['is_future'] is True
+                assert entry['issue'] is None
+
+    def test_calendar_flags_missing_check_out_and_clears_after_approval(self):
+        self._set_work_days('1,2,3,4,5')
+        day = self._last_working_day(1)
+        Attendance.objects.filter(employee=self.employee, attendance_date=day).delete()
+        ManualAttendanceRequest.objects.filter(
+            employee=self.employee, attendance_date=day
+        ).delete()
+        rec = self._make_unclosed_day(day, hour=9)
+
+        cal = AttendanceService.get_monthly_calendar(self.employee, day.year, day.month)
+        entry = next(d for d in cal['days'] if d['date'] == str(day))
+        assert entry['issue'] == 'MISSED_CHECK_OUT'
+        assert entry['can_request_check_out'] is True
+        assert entry['can_request_check_in'] is False
+
+        req = ManualRequestService.create_request(
+            employee=self.employee,
+            attendance_date=day,
+            request_type=ManualAttendanceRequest.RequestType.MISSED_CHECK_OUT,
+            requested_check_out=timezone.make_aware(
+                datetime.combine(day, datetime.strptime('17:00', '%H:%M').time()),
+                timezone.get_current_timezone()
+            ),
+            reason='Forgot to check out during field duty.'
+        )
+        # A pending request must suppress the duplicate action.
+        cal = AttendanceService.get_monthly_calendar(self.employee, day.year, day.month)
+        entry = next(d for d in cal['days'] if d['date'] == str(day))
+        assert entry['pending_request_id'] == req.id
+        assert entry['can_request_check_out'] is False
+
+        ManualRequestService.approve_request(req.id, self.admin)
+        rec.refresh_from_db()
+        assert rec.check_out_time is not None
+        cal = AttendanceService.get_monthly_calendar(self.employee, day.year, day.month)
+        entry = next(d for d in cal['days'] if d['date'] == str(day))
+        assert entry['issue'] is None
+
+    def test_check_out_only_request_requires_existing_unclosed_record(self):
+        self._set_work_days('1,2,3,4,5')
+        day = self._last_working_day(1)
+        Attendance.objects.filter(employee=self.employee, attendance_date=day).delete()
+        ManualAttendanceRequest.objects.filter(
+            employee=self.employee, attendance_date=day
+        ).delete()
+        checkout = timezone.make_aware(
+            datetime.combine(day, datetime.strptime('17:00', '%H:%M').time()),
+            timezone.get_current_timezone()
+        )
+
+        # No record at all -> must steer the user to a missed check-in instead.
+        with pytest.raises(ConflictException):
+            ManualRequestService.create_request(
+                employee=self.employee,
+                attendance_date=day,
+                request_type=ManualAttendanceRequest.RequestType.MISSED_CHECK_OUT,
+                requested_check_out=checkout,
+                reason='x'
+            )
+
+        # Record exists but is already closed -> nothing is missing.
+        Attendance.objects.create(
+            employee=self.employee, attendance_date=day,
+            check_in_time=timezone.make_aware(
+                datetime.combine(day, datetime.strptime('09:00', '%H:%M').time()),
+                timezone.get_current_timezone()
+            ),
+            check_out_time=checkout, working_duration_minutes=480,
+            attendance_type=Attendance.Type.AUTOMATIC, status=Attendance.Status.PRESENT
+        )
+        with pytest.raises(ConflictException):
+            ManualRequestService.create_request(
+                employee=self.employee,
+                attendance_date=day,
+                request_type=ManualAttendanceRequest.RequestType.MISSED_CHECK_OUT,
+                requested_check_out=checkout,
+                reason='x'
+            )
+
+    def test_check_out_only_request_preserves_original_check_in(self):
+        """
+        The core guarantee of a check-out-only request: the server-recorded
+        check-in (and its status) must survive approval untouched.
+        """
+        self._set_work_days('1,2,3,4,5')
+        day = self._last_working_day(1)
+        Attendance.objects.filter(employee=self.employee, attendance_date=day).delete()
+        ManualAttendanceRequest.objects.filter(
+            employee=self.employee, attendance_date=day
+        ).delete()
+
+        original_in = timezone.make_aware(
+            datetime.combine(day, datetime.strptime('09:07', '%H:%M').time()),
+            timezone.get_current_timezone()
+        )
+        rec = self._make_unclosed_day(day, hour=9)
+        rec.check_in_time = original_in
+        rec.status = Attendance.Status.LATE
+        rec.save()
+
+        requested_out = timezone.make_aware(
+            datetime.combine(day, datetime.strptime('17:30', '%H:%M').time()),
+            timezone.get_current_timezone()
+        )
+        req = ManualRequestService.create_request(
+            employee=self.employee,
+            attendance_date=day,
+            request_type=ManualAttendanceRequest.RequestType.MISSED_CHECK_OUT,
+            requested_check_out=requested_out,
+            reason='Forgot to check out during field duty.'
+        )
+        # A check-out-only request stores no check-in of its own.
+        assert req.requested_check_in is None
+
+        ManualRequestService.approve_request(req.id, self.admin)
+
+        rec.refresh_from_db()
+        assert rec.check_in_time == original_in
+        assert rec.check_out_time == requested_out
+        assert rec.status == Attendance.Status.LATE
+        assert rec.attendance_type == Attendance.Type.MANUAL
+        assert rec.working_duration_minutes == 503  # 09:07 -> 17:30
+        assert rec.approved_by == self.admin
+        assert rec.manual_request_id == req.id
+
+    def test_check_out_only_request_rejects_check_in_before_existing(self):
+        self._set_work_days('1,2,3,4,5')
+        day = self._last_working_day(1)
+        Attendance.objects.filter(employee=self.employee, attendance_date=day).delete()
+        ManualAttendanceRequest.objects.filter(
+            employee=self.employee, attendance_date=day
+        ).delete()
+        self._make_unclosed_day(day, hour=14)  # checked in 14:00
+
+        too_early = timezone.make_aware(
+            datetime.combine(day, datetime.strptime('09:00', '%H:%M').time()),
+            timezone.get_current_timezone()
+        )
+        with pytest.raises(drf_serializers.ValidationError):
+            ManualRequestService.create_request(
+                employee=self.employee,
+                attendance_date=day,
+                request_type=ManualAttendanceRequest.RequestType.MISSED_CHECK_OUT,
+                requested_check_out=too_early,
+                reason='x'
+            )
+
+    def test_missed_check_in_request_blocked_on_non_working_day(self):
+        self._set_work_days('1,2,3,4,5')
+        saturday = date(2026, 9, 26)
+        assert saturday.isoweekday() == 6
+        with pytest.raises(drf_serializers.ValidationError):
+            ManualRequestService.create_request(
+                employee=self.employee,
+                attendance_date=saturday,
+                request_type=ManualAttendanceRequest.RequestType.MISSED_CHECK_IN,
+                requested_check_in=timezone.make_aware(
+                    datetime.combine(saturday, datetime.strptime('09:00', '%H:%M').time()),
+                    timezone.get_current_timezone()
+                ),
+                requested_check_out=timezone.make_aware(
+                    datetime.combine(saturday, datetime.strptime('17:00', '%H:%M').time()),
+                    timezone.get_current_timezone()
+                ),
+                reason='x'
+            )
+
+    def test_missed_check_in_request_blocked_when_record_exists(self):
+        self._set_work_days('1,2,3,4,5')
+        day = self._last_working_day(1)
+        Attendance.objects.filter(employee=self.employee, attendance_date=day).delete()
+        ManualAttendanceRequest.objects.filter(
+            employee=self.employee, attendance_date=day
+        ).delete()
+        self._make_unclosed_day(day, hour=9)
+
+        with pytest.raises(ConflictException):
+            ManualRequestService.create_request(
+                employee=self.employee,
+                attendance_date=day,
+                request_type=ManualAttendanceRequest.RequestType.MISSED_CHECK_IN,
+                requested_check_in=timezone.make_aware(
+                    datetime.combine(day, datetime.strptime('09:00', '%H:%M').time()),
+                    timezone.get_current_timezone()
+                ),
+                requested_check_out=timezone.make_aware(
+                    datetime.combine(day, datetime.strptime('17:00', '%H:%M').time()),
+                    timezone.get_current_timezone()
+                ),
+                reason='x'
+            )
+
+    def test_missed_check_out_does_not_flag_non_working_days(self):
+        """
+        An unclosed record on a weekend must not raise a missed-checkout warning,
+        because no check-out was ever required.
+        """
+        self._set_work_days('1,2,3,4,5')
+        saturday = date(2026, 9, 26)
+        self._make_unclosed_day(saturday, hour=10)
+        assert AttendanceService.get_missed_checkout(self.employee) is None

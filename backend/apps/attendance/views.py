@@ -2,6 +2,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, generics, viewsets
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import ValidationError
 from django.shortcuts import get_object_or_404
 from django.db.models import Q
 from .models import Attendance, AttendanceSetting
@@ -121,6 +122,36 @@ class MyAttendanceHistoryView(generics.ListAPIView):
             qs = qs.filter(attendance_date__lte=end_date)
 
         return qs
+
+
+class MyAttendanceCalendarView(APIView):
+    """
+    Working-day aware personal attendance calendar for a month.
+
+    Returns one entry per configured working day, including working days that
+    have no attendance record at all, so the assistant can be offered a manual
+    request for a missed check-in as well as a missed check-out.
+    """
+    permission_classes = [IsAuthenticated, IsFieldAssistant, IsActiveEmployee]
+
+    def get(self, request):
+        today = get_dhaka_date()
+
+        month = request.query_params.get('month')
+        year = request.query_params.get('year')
+        try:
+            month = int(month) if month else today.month
+            year = int(year) if year else today.year
+        except (TypeError, ValueError):
+            raise ValidationError({"detail": "month and year must be integers."})
+
+        if not 1 <= month <= 12:
+            raise ValidationError({"detail": "month must be between 1 and 12."})
+        if not 2000 <= year <= 2100:
+            raise ValidationError({"detail": "year must be between 2000 and 2100."})
+
+        employee = request.user.employee_profile
+        return Response(AttendanceService.get_monthly_calendar(employee, year, month))
 
 
 class AdminAttendanceViewSet(viewsets.ReadOnlyModelViewSet):

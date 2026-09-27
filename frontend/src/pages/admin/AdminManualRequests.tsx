@@ -149,6 +149,17 @@ export const AdminManualRequests: React.FC = () => {
                       {r.attendance_date}
                     </td>
                     <td className="py-3.5 px-6 font-mono text-slate-700">
+                      {r.request_type === 'MISSED_CHECK_OUT' ? (
+                        <span className="text-[10px] font-black uppercase tracking-wider bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded">
+                          Check-Out Only
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-black uppercase tracking-wider bg-rose-50 text-rose-700 border border-rose-200 px-1.5 py-0.5 rounded">
+                          Check-In + Out
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-3.5 px-6 font-mono text-slate-700">
                       {r.requested_check_in_display}
                     </td>
                     <td className="py-3.5 px-6 font-mono text-slate-700">
@@ -219,6 +230,18 @@ export const AdminManualRequests: React.FC = () => {
               <div className="flex justify-between">
                 <span className="text-slate-500">Date:</span>
                 <span className="font-bold text-slate-800">{selectedReq.attendance_date}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Request Type:</span>
+                <span className="font-bold text-slate-800">
+                  {selectedReq.request_type_display}
+                  {selectedReq.request_type === 'MISSED_CHECK_OUT' && (
+                    <div className="text-[10px] font-medium text-blue-600 mt-0.5 max-w-[220px]">
+                      Approving closes the existing record. The server-recorded check-in and its
+                      location are preserved.
+                    </div>
+                  )}
+                </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-500">Requested Hours:</span>

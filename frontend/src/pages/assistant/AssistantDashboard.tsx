@@ -219,7 +219,7 @@ export const AssistantDashboard: React.FC = () => {
             </div>
           </div>
           <Link
-            to={`/assistant/requests?date=${missed.attendance_date}`}
+            to={`/assistant/requests?date=${missed.attendance_date}&type=MISSED_CHECK_OUT`}
             className="flex items-center justify-center gap-2 w-full min-h-[48px] px-4 py-3 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-black uppercase tracking-wide shadow-md shadow-amber-600/25 transition-colors"
           >
             <FileQuestion className="w-4 h-4" />

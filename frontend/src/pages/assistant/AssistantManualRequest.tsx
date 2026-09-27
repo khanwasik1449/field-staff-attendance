@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { apiClient, extractErrorMessage } from '../../lib/api';
 import { ManualAttendanceRequest } from '../../types';
 import { StatusBadge } from '../../components/StatusBadge';
-import { FileQuestion, Send, CheckCircle2, AlertCircle, Clock, Calendar, HelpCircle } from 'lucide-react';
+import { FileQuestion, Send, CheckCircle2, AlertCircle, LogIn, LogOut } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
+import { ManualRequestType } from '../../types';
 
 export const AssistantManualRequest: React.FC = () => {
   const [requests, setRequests] = useState<ManualAttendanceRequest[]>([]);
@@ -11,13 +12,19 @@ export const AssistantManualRequest: React.FC = () => {
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
-  // The dashboard links here with ?date=YYYY-MM-DD when a check-out was missed,
-  // so the form opens on the duty day that actually needs correcting.
-  // The param is ignored unless it is a well-formed date, so a hand-edited or
-  // stale link can never prefill the form with nonsense.
+  // The history page links here with ?date=YYYY-MM-DD&type=MISSED_CHECK_IN|OUT so
+  // the form opens on the exact day and correction type that needs attention.
+  // Both params are ignored unless well-formed, so a hand-edited or stale link
+  // can never prefill the form with nonsense.
   const [searchParams] = useSearchParams();
   const dateParam = searchParams.get('date');
   const missedDate = dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : null;
+
+  const typeParam = searchParams.get('type');
+  const initialType: ManualRequestType =
+    typeParam === 'MISSED_CHECK_OUT' ? 'MISSED_CHECK_OUT' : 'MISSED_CHECK_IN';
+
+  const [requestType, setRequestType] = useState<ManualRequestType>(initialType);
 
   // Form inputs
   const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
@@ -25,9 +32,13 @@ export const AssistantManualRequest: React.FC = () => {
   const [checkInTime, setCheckInTime] = useState('09:00');
   const [checkOutTime, setCheckOutTime] = useState('17:00');
   const [reason, setReason] = useState(
-    missedDate ? 'Forgot to check out during field duty.' : 'Forgot to check in.'
+    initialType === 'MISSED_CHECK_OUT'
+      ? 'Forgot to check out during field duty.'
+      : 'Forgot to check in upon arrival.'
   );
   const [remarks, setRemarks] = useState('');
+
+  const isCheckOutOnly = requestType === 'MISSED_CHECK_OUT';
 
   const fetchMyRequests = async () => {
     try {
@@ -44,6 +55,15 @@ export const AssistantManualRequest: React.FC = () => {
     fetchMyRequests();
   }, []);
 
+  const handleTypeChange = (next: ManualRequestType) => {
+    setRequestType(next);
+    setReason(
+      next === 'MISSED_CHECK_OUT'
+        ? 'Forgot to check out during field duty.'
+        : 'Forgot to check in upon arrival.'
+    );
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFeedback(null);
@@ -51,16 +71,23 @@ export const AssistantManualRequest: React.FC = () => {
 
     try {
       // Create ISO strings in Asia/Dhaka (+06:00 offset)
-      const reqCheckIn = `${date}T${checkInTime}:00+06:00`;
       const reqCheckOut = `${date}T${checkOutTime}:00+06:00`;
 
-      const res = await apiClient.post('/manual-requests/', {
+      const payload: Record<string, unknown> = {
         attendance_date: date,
-        requested_check_in: reqCheckIn,
+        request_type: requestType,
         requested_check_out: reqCheckOut,
         reason,
         remarks,
-      });
+      };
+
+      // A check-out-only request must NOT send a check-in: the existing
+      // server-recorded check-in is preserved by the backend.
+      payload.requested_check_in = isCheckOutOnly
+        ? null
+        : `${date}T${checkInTime}:00+06:00`;
+
+      const res = await apiClient.post('/manual-requests/', payload);
 
       setFeedback({ type: 'success', message: res.data.detail });
       setRemarks('');
@@ -72,15 +99,23 @@ export const AssistantManualRequest: React.FC = () => {
     }
   };
 
-  const reasonPresets = [
-    'Forgot to check out during field duty.',
-    'Forgot to check in upon arrival.',
-    'Mobile battery depleted during field duty.',
-    'Device network connectivity issue in remote area.',
-    'Assigned urgent field dispatch without phone access.',
-    'System error during mobile check-in.',
-    'Other'
-  ];
+  const reasonPresets = isCheckOutOnly
+    ? [
+      'Forgot to check out during field duty.',
+      'Mobile battery depleted during field duty.',
+      'Device network connectivity issue in remote area.',
+      'Assigned urgent field dispatch without phone access.',
+      'System error during mobile check-out.',
+      'Other',
+    ]
+    : [
+      'Forgot to check in upon arrival.',
+      'Mobile battery depleted during field duty.',
+      'Device network connectivity issue in remote area.',
+      'Assigned urgent field dispatch without phone access.',
+      'System error during mobile check-in.',
+      'Other',
+    ];
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-6 space-y-6">
@@ -123,6 +158,47 @@ export const AssistantManualRequest: React.FC = () => {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Correction type */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+              What needs correcting?
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => handleTypeChange('MISSED_CHECK_IN')}
+                className={`flex flex-col items-start gap-1 p-3 rounded-xl border-2 text-left transition-colors min-h-[64px] ${
+                  !isCheckOutOnly
+                    ? 'border-rose-500 bg-rose-50'
+                    : 'border-slate-200 bg-slate-50 hover:border-slate-300'
+                }`}
+              >
+                <span className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wide text-rose-700">
+                  <LogIn className="w-3.5 h-3.5" /> Missed Check-In
+                </span>
+                <span className="text-[10px] text-slate-500 leading-tight">
+                  No record for a working day
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleTypeChange('MISSED_CHECK_OUT')}
+                className={`flex flex-col items-start gap-1 p-3 rounded-xl border-2 text-left transition-colors min-h-[64px] ${
+                  isCheckOutOnly
+                    ? 'border-amber-500 bg-amber-50'
+                    : 'border-slate-200 bg-slate-50 hover:border-slate-300'
+                }`}
+              >
+                <span className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wide text-amber-700">
+                  <LogOut className="w-3.5 h-3.5" /> Missed Check-Out
+                </span>
+                <span className="text-[10px] text-slate-500 leading-tight">
+                  Checked in, never checked out
+                </span>
+              </button>
+            </div>
+          </div>
+
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1">
               Attendance Date
@@ -134,34 +210,61 @@ export const AssistantManualRequest: React.FC = () => {
               className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-none"
               required
             />
+            <p className="text-[10px] text-slate-400 mt-1">
+              Must be a configured working day for a missed check-in request.
+            </p>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Requested Check-In
-              </label>
-              <input
-                type="time"
-                value={checkInTime}
-                onChange={(e) => setCheckInTime(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                required
-              />
+          {isCheckOutOnly ? (
+            <div className="space-y-2">
+              <div className="flex items-start gap-2 p-3 rounded-xl bg-blue-50 border border-blue-200">
+                <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                <p className="text-[11px] text-blue-900 leading-relaxed font-medium">
+                  Your existing check-in for this day is kept exactly as recorded by the
+                  server, together with its location. You only supply the check-out time.
+                </p>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Requested Check-Out
+                </label>
+                <input
+                  type="time"
+                  value={checkOutTime}
+                  onChange={(e) => setCheckOutTime(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  required
+                />
+              </div>
             </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Requested Check-Out
-              </label>
-              <input
-                type="time"
-                value={checkOutTime}
-                onChange={(e) => setCheckOutTime(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-none"
-                required
-              />
+          ) : (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Requested Check-In
+                </label>
+                <input
+                  type="time"
+                  value={checkInTime}
+                  onChange={(e) => setCheckInTime(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Requested Check-Out
+                </label>
+                <input
+                  type="time"
+                  value={checkOutTime}
+                  onChange={(e) => setCheckOutTime(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                  required
+                />
+              </div>
             </div>
-          </div>
+          )}
 
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1">
@@ -223,15 +326,31 @@ export const AssistantManualRequest: React.FC = () => {
                 key={r.id}
                 className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm space-y-2"
               >
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <div className="text-xs font-bold text-slate-900">
                     {r.attendance_date}
                   </div>
-                  <StatusBadge status={r.status} />
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className={`text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+                        r.request_type === 'MISSED_CHECK_OUT'
+                          ? 'bg-amber-50 text-amber-700 border-amber-200'
+                          : 'bg-rose-50 text-rose-700 border-rose-200'
+                      }`}
+                    >
+                      {r.request_type_display}
+                    </span>
+                    <StatusBadge status={r.status} />
+                  </div>
                 </div>
 
-                <div className="text-xs text-slate-600 flex items-center gap-4">
-                  <span>In: <strong>{r.requested_check_in_display}</strong></span>
+                <div className="text-xs text-slate-600 flex items-center gap-4 flex-wrap">
+                  <span>
+                    In:{' '}
+                    <strong className={r.requested_check_in ? '' : 'text-blue-600'}>
+                      {r.requested_check_in_display}
+                    </strong>
+                  </span>
                   <span>Out: <strong>{r.requested_check_out_display}</strong></span>
                 </div>
 

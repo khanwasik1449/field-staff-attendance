@@ -1,16 +1,17 @@
 import zoneinfo
 import math
+import calendar
 import urllib.request
 import urllib.parse
 import json
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from django.utils import timezone
 from django.db import transaction
 from rest_framework import exceptions, status
 from rest_framework.views import exception_handler
 from rest_framework.response import Response
 
-from .models import Attendance, AttendanceSetting
+from .models import Attendance, AttendanceSetting, ISO_WEEKDAYS
 from apps.audit.services import AuditService
 
 def get_reverse_geocoded_address(latitude, longitude):
@@ -371,10 +372,21 @@ class AttendanceService:
         assistant and needs a ManualAttendanceRequest instead. The device clock
         is never consulted.
 
+        Only configured working days are considered. An assistant is never nagged
+        to file manual attendance for a weekend or holiday day they were not
+        required to work.
+
         Returns None when there is nothing outstanding.
         """
         if today is None:
             today = get_dhaka_date()
+
+        setting = AttendanceSetting.get_active()
+        working = setting.working_days_in_range(
+            today - timedelta(days=90), today - timedelta(days=1)
+        )
+        if not working:
+            return None
 
         outstanding = list(
             Attendance.objects
@@ -382,7 +394,7 @@ class AttendanceService:
                 employee=employee,
                 check_in_time__isnull=False,
                 check_out_time__isnull=True,
-                attendance_date__lt=today
+                attendance_date__in=working
             )
             .order_by('-attendance_date')
         )
@@ -397,6 +409,143 @@ class AttendanceService:
             'check_in_time': latest.check_in_time.isoformat(),
             'check_in_display': format_time_display(latest.check_in_time),
             'attendance_id': latest.id,
+        }
+
+    @staticmethod
+    def _serialize_calendar_attendance(rec):
+        """Compact per-day attendance payload for the history calendar."""
+        return {
+            'id': rec.id,
+            'attendance_date': str(rec.attendance_date),
+            'status': rec.status,
+            'attendance_type': rec.attendance_type,
+            'check_in_time': rec.check_in_time.isoformat(),
+            'check_in_display': format_time_display(rec.check_in_time),
+            'check_out_time': rec.check_out_time.isoformat() if rec.check_out_time else None,
+            'check_out_display': (
+                format_time_display(rec.check_out_time) if rec.check_out_time else None
+            ),
+            'working_duration_minutes': rec.working_duration_minutes,
+            'working_duration_display': (
+                format_duration_display(rec.working_duration_minutes)
+                if rec.working_duration_minutes is not None else None
+            ),
+            'check_in_address': rec.check_in_address,
+            'check_in_latitude': float(rec.check_in_latitude) if rec.check_in_latitude is not None else None,
+            'check_in_longitude': float(rec.check_in_longitude) if rec.check_in_longitude is not None else None,
+            'admin_remarks': rec.admin_remarks,
+        }
+
+    @staticmethod
+    def get_monthly_calendar(employee, year, month):
+        """
+        Builds a working-day aware attendance calendar for one calendar month.
+
+        Unlike a plain list of Attendance rows, this includes every configured
+        working day in the month - including days with no attendance record at
+        all - because a missed check-in is precisely the case where no row
+        exists. Clients must not re-derive the working calendar themselves; the
+        server owns it (AttendanceSetting.work_days).
+
+        Each day reports an 'issue' of MISSED_CHECK_IN or MISSED_CHECK_OUT so
+        the assistant can be offered the correct manual request for that day.
+        """
+        # Imported locally: requests.services imports this module, so a
+        # module-level import of requests.models risks an import cycle.
+        from apps.requests.models import ManualAttendanceRequest
+
+        setting = AttendanceSetting.get_active()
+        today = get_dhaka_date()
+
+        first = date(year, month, 1)
+        last = date(year, month, calendar.monthrange(year, month)[1])
+
+        records = {
+            rec.attendance_date: rec
+            for rec in Attendance.objects.filter(
+                employee=employee, attendance_date__range=(first, last)
+            )
+        }
+        pending_requests = {
+            p.attendance_date: p
+            for p in ManualAttendanceRequest.objects.filter(
+                employee=employee,
+                attendance_date__range=(first, last),
+                status=ManualAttendanceRequest.Status.PENDING
+            )
+        }
+
+        days = []
+        counts = {
+            'working_days': 0,
+            'recorded_days': 0,
+            'complete_days': 0,
+            'missed_check_in': 0,
+            'missed_check_out': 0,
+        }
+        total_minutes = 0
+
+        for day in setting.working_days_in_range(first, last):
+            counts['working_days'] += 1
+            rec = records.get(day)
+            pending = pending_requests.get(day)
+
+            is_future = day > today
+            is_today = day == today
+            day_has_ended = day < today
+
+            issue = None
+            if day_has_ended:
+                if rec is None:
+                    issue = 'MISSED_CHECK_IN'
+                elif rec.check_out_time is None:
+                    issue = 'MISSED_CHECK_OUT'
+
+            if rec is not None:
+                counts['recorded_days'] += 1
+                if rec.check_out_time is not None:
+                    counts['complete_days'] += 1
+                if rec.working_duration_minutes:
+                    total_minutes += rec.working_duration_minutes
+
+            if issue == 'MISSED_CHECK_IN':
+                counts['missed_check_in'] += 1
+            elif issue == 'MISSED_CHECK_OUT':
+                counts['missed_check_out'] += 1
+
+            days.append({
+                'date': str(day),
+                'weekday': day.strftime('%A'),
+                'is_today': is_today,
+                'is_future': is_future,
+                'day_has_ended': day_has_ended,
+                'attendance': (
+                    AttendanceService._serialize_calendar_attendance(rec) if rec else None
+                ),
+                'issue': issue,
+                # A pending request already covers this day, so do not offer a
+                # second one - the service would reject it as a duplicate anyway.
+                'pending_request_id': pending.id if pending else None,
+                'pending_request_type': pending.request_type if pending else None,
+                'can_request_check_in': issue == 'MISSED_CHECK_IN' and pending is None,
+                'can_request_check_out': issue == 'MISSED_CHECK_OUT' and pending is None,
+            })
+
+        return {
+            'month': month,
+            'year': year,
+            'server_date': str(today),
+            'work_days': setting.work_days,
+            'working_days_display': [
+                f"{num}:{name}" for num, name in ISO_WEEKDAYS.items()
+                if num in setting.working_weekdays
+            ],
+            'summary': {
+                **counts,
+                'total_working_minutes': total_minutes,
+                'total_working_display': format_duration_display(total_minutes) if total_minutes else '--',
+            },
+            'days': days,
         }
 
     @staticmethod

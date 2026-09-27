@@ -8,6 +8,10 @@ class ManualAttendanceRequest(models.Model):
         APPROVED = 'APPROVED', 'Approved'
         REJECTED = 'REJECTED', 'Rejected'
 
+    class RequestType(models.TextChoices):
+        MISSED_CHECK_IN = 'MISSED_CHECK_IN', 'Missed Check-In'
+        MISSED_CHECK_OUT = 'MISSED_CHECK_OUT', 'Missed Check-Out'
+
     employee = models.ForeignKey(
         Employee,
         on_delete=models.PROTECT,
@@ -17,7 +21,26 @@ class ManualAttendanceRequest(models.Model):
         db_index=True,
         help_text="The date for which manual attendance is requested"
     )
-    requested_check_in = models.DateTimeField()
+    request_type = models.CharField(
+        max_length=20,
+        choices=RequestType.choices,
+        default=RequestType.MISSED_CHECK_IN,
+        db_index=True,
+        help_text=(
+            "MISSED_CHECK_IN: the assistant never checked in, so both times are "
+            "supplied and the duty day is created. MISSED_CHECK_OUT: the assistant "
+            "already checked in successfully and only the check-out is supplied; "
+            "the existing server-recorded check-in is preserved untouched."
+        )
+    )
+    requested_check_in = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Server-side check-in requested by the assistant. Null for "
+            "MISSED_CHECK_OUT, where the existing automatic check-in is kept."
+        )
+    )
     requested_check_out = models.DateTimeField()
     reason = models.TextField(
         help_text="Reason for missing automatic check-in/out"

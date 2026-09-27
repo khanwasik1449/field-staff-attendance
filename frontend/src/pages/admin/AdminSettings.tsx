@@ -3,6 +3,16 @@ import { apiClient, extractErrorMessage } from '../../lib/api';
 import { AttendanceSetting } from '../../types';
 import { Settings, Save, CheckCircle2, AlertCircle, Clock, Globe } from 'lucide-react';
 
+const WEEKDAY_OPTIONS = [
+  { number: 1, name: 'Monday' },
+  { number: 2, name: 'Tuesday' },
+  { number: 3, name: 'Wednesday' },
+  { number: 4, name: 'Thursday' },
+  { number: 5, name: 'Friday' },
+  { number: 6, name: 'Saturday' },
+  { number: 7, name: 'Sunday' },
+];
+
 export const AdminSettings: React.FC = () => {
   const [settings, setSettings] = useState<AttendanceSetting | null>(null);
   const [loading, setLoading] = useState(true);
@@ -114,6 +124,46 @@ export const AdminSettings: React.FC = () => {
               />
               <p className="text-[11px] text-slate-400 mt-1">Standard shift departure reference time.</p>
             </div>
+          </div>
+
+          {/* Working Day Calendar */}
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1.5">
+              Working Days
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {WEEKDAY_OPTIONS.map((day) => {
+                const enabled = settings.work_days_display?.some((d) => d.number === day.number && d.enabled) ?? false;
+                return (
+                  <button
+                    key={day.number}
+                    type="button"
+                    onClick={() => {
+                      const next = enabled
+                        ? settings.work_days_display.filter((d) => d.enabled && d.number !== day.number)
+                        : [...settings.work_days_display.filter((d) => d.enabled), { ...day, enabled: true }]
+                          .sort((a, b) => a.number - b.number);
+                      setSettings({
+                        ...settings,
+                        work_days: next.map((d) => d.number).join(','),
+                        work_days_display: next,
+                      });
+                    }}
+                    className={`px-3.5 py-2 rounded-xl text-xs font-bold border-2 transition-colors min-h-[40px] ${
+                      enabled
+                        ? 'border-emerald-500 bg-emerald-50 text-emerald-800'
+                        : 'border-slate-200 bg-slate-50 text-slate-400 hover:border-slate-300'
+                    }`}
+                  >
+                    {day.name.slice(0, 3)}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[11px] text-slate-400 mt-1.5">
+              Only working days require attendance, appear in the assistant's history, and can
+              receive a missed check-in request. Non-working days are never flagged.
+            </p>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">

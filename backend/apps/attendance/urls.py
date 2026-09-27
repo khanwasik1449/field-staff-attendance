@@ -5,6 +5,7 @@ from .views import (
     CheckInView,
     CheckOutView,
     MyAttendanceHistoryView,
+    MyAttendanceCalendarView,
     AdminAttendanceViewSet,
     AttendanceSettingView,
     AdminResetDutyView
@@ -19,6 +20,7 @@ urlpatterns = [
     path('check-in/', CheckInView.as_view(), name='attendance_check_in'),
     path('check-out/', CheckOutView.as_view(), name='attendance_check_out'),
     path('my-history/', MyAttendanceHistoryView.as_view(), name='attendance_my_history'),
+    path('my-calendar/', MyAttendanceCalendarView.as_view(), name='attendance_my_calendar'),
     
     # Admin routes
     path('admin/reset-duty/', AdminResetDutyView.as_view(), name='admin_reset_duty'),

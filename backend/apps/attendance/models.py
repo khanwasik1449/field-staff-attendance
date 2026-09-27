@@ -1,7 +1,31 @@
 from django.db import models
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.utils import timezone
 from apps.accounts.models import Employee
+
+# ISO-8601 weekday numbers: 1=Monday ... 7=Sunday
+ISO_WEEKDAYS = {1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 4: 'Thursday',
+                5: 'Friday', 6: 'Saturday', 7: 'Sunday'}
+
+
+def parse_work_days(raw):
+    """
+    Parses a comma-separated ISO weekday list (e.g. '1,2,3,4,5') into a sorted
+    tuple of ints. Raises ValidationError on anything malformed so bad data can
+    never reach the business logic.
+    """
+    if raw is None or not str(raw).strip():
+        return ()
+    try:
+        days = tuple(sorted({int(part.strip()) for part in str(raw).split(',') if part.strip()}))
+    except (TypeError, ValueError):
+        raise ValidationError("work_days must be a comma-separated list of ISO weekday numbers 1-7.")
+    invalid = [d for d in days if d not in ISO_WEEKDAYS]
+    if invalid:
+        raise ValidationError(f"Invalid ISO weekday number(s): {', '.join(map(str, invalid))}. Use 1-7.")
+    return days
+
 
 class AttendanceSetting(models.Model):
     """
@@ -9,6 +33,16 @@ class AttendanceSetting(models.Model):
     """
     work_start_time = models.TimeField(default='09:00:00', help_text="Official shift start time")
     work_end_time = models.TimeField(default='17:00:00', help_text="Official shift end time")
+    work_days = models.CharField(
+        default='1,2,3,4,5',
+        max_length=20,
+        validators=[parse_work_days],
+        help_text=(
+            "Comma-separated ISO weekday numbers treated as working days "
+            "(1=Monday ... 7=Sunday). Drives which days require attendance and "
+            "which days are eligible for a missed check-in request."
+        )
+    )
     late_grace_minutes = models.PositiveIntegerField(
         default=15,
         help_text="Minutes after work_start_time before an attendance is marked LATE"
@@ -53,6 +87,36 @@ class AttendanceSetting(models.Model):
         if not setting:
             setting = cls.objects.create()
         return setting
+
+    def clean(self):
+        super().clean()
+        # Re-validates work_days through the field validators.
+        parse_work_days(self.work_days)
+
+    @property
+    def working_weekdays(self):
+        return parse_work_days(self.work_days)
+
+    def is_working_day(self, date):
+        """True when the given date falls on a configured working day."""
+        return date.isoweekday() in self.working_weekdays
+
+    def working_days_in_range(self, start_date, end_date):
+        """
+        Yields each configured working day between start_date and end_date
+        inclusive. This is the authoritative calendar - clients must never
+        re-derive working days themselves.
+        """
+        working = self.working_weekdays
+        if not working:
+            return []
+        days = []
+        cursor = start_date
+        while cursor <= end_date:
+            if cursor.isoweekday() in working:
+                days.append(cursor)
+            cursor += timezone.timedelta(days=1)
+        return days
 
 
 class Attendance(models.Model):

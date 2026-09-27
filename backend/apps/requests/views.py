@@ -25,7 +25,8 @@ class SubmitManualRequestView(APIView):
         manual_req = ManualRequestService.create_request(
             employee=employee,
             attendance_date=data['attendance_date'],
-            requested_check_in=data['requested_check_in'],
+            request_type=data['request_type'],
+            requested_check_in=data.get('requested_check_in'),
             requested_check_out=data['requested_check_out'],
             reason=data['reason'],
             remarks=data.get('remarks', ''),

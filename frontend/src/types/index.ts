@@ -132,6 +132,8 @@ export interface TodayAttendanceResponse {
 
 export type ManualRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
 
+export type ManualRequestType = 'MISSED_CHECK_IN' | 'MISSED_CHECK_OUT';
+
 export interface ManualAttendanceRequest {
   id: number;
   employee: number;
@@ -139,7 +141,9 @@ export interface ManualAttendanceRequest {
   employee_name: string;
   department_name: string;
   attendance_date: string;
-  requested_check_in: string;
+  request_type: ManualRequestType;
+  request_type_display: string;
+  requested_check_in: string | null;
   requested_check_out: string;
   requested_check_in_display: string;
   requested_check_out_display: string;
@@ -151,6 +155,59 @@ export interface ManualAttendanceRequest {
   reviewed_at?: string | null;
   admin_remarks?: string;
   created_at: string;
+}
+
+export type CalendarIssue = 'MISSED_CHECK_IN' | 'MISSED_CHECK_OUT' | null;
+
+export interface CalendarDayAttendance {
+  id: number;
+  attendance_date: string;
+  status: AttendanceStatus;
+  attendance_type: AttendanceType;
+  check_in_time: string;
+  check_in_display: string;
+  check_out_time: string | null;
+  check_out_display: string | null;
+  working_duration_minutes: number | null;
+  working_duration_display: string | null;
+  check_in_address: string;
+  check_in_latitude: number | null;
+  check_in_longitude: number | null;
+  admin_remarks: string;
+}
+
+export interface CalendarDay {
+  date: string;
+  weekday: string;
+  is_today: boolean;
+  is_future: boolean;
+  day_has_ended: boolean;
+  attendance: CalendarDayAttendance | null;
+  issue: CalendarIssue;
+  pending_request_id: number | null;
+  pending_request_type: ManualRequestType | null;
+  can_request_check_in: boolean;
+  can_request_check_out: boolean;
+}
+
+export interface CalendarSummary {
+  working_days: number;
+  recorded_days: number;
+  complete_days: number;
+  missed_check_in: number;
+  missed_check_out: number;
+  total_working_minutes: number;
+  total_working_display: string;
+}
+
+export interface MyCalendarResponse {
+  month: number;
+  year: number;
+  server_date: string;
+  work_days: string;
+  working_days_display: { number: number; name: string; enabled: boolean }[];
+  summary: CalendarSummary;
+  days: CalendarDay[];
 }
 
 export type LeaveType = 'CASUAL' | 'SICK' | 'EMERGENCY' | 'EARNED' | 'MATERNITY' | 'OTHER';
@@ -317,6 +374,8 @@ export interface AttendanceSetting {
   id: number;
   work_start_time: string;
   work_end_time: string;
+  work_days: string;
+  work_days_display: { number: number; name: string; enabled: boolean }[];
   late_grace_minutes: number;
   half_day_minimum_minutes: number;
   full_day_minimum_minutes: number;
