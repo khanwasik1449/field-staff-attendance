@@ -14,6 +14,23 @@ function getCsrfToken(): string | null {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+/**
+ * In-flight refresh, shared by every 401 so a burst of parallel requests triggers
+ * exactly one rotation.
+ */
+let refreshPromise: Promise<string> | null = null;
+
+/** Dispatched instead of a hard navigation so the SPA can redirect in-app. */
+export const SESSION_EXPIRED_EVENT = 'fra:session-expired';
+
+export function clearStoredSession(): void {
+  localStorage.removeItem('fams_access_token');
+  localStorage.removeItem('fams_refresh_token');
+  localStorage.removeItem('fams_user');
+  localStorage.removeItem('fams_employee');
+  window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+}
+
 // Request interceptor injecting JWT and CSRF token if present
 apiClient.interceptors.request.use(
   (config) => {
@@ -31,39 +48,61 @@ apiClient.interceptors.request.use(
 );
 
 // Response interceptor handling 401
+//
+// SIMPLE_JWT runs with ROTATE_REFRESH_TOKENS + BLACKLIST_AFTER_ROTATION, so every
+// successful refresh returns a NEW refresh token and immediately blacklists the one
+// we just sent. The rotated token MUST be persisted, otherwise the next refresh
+// replays a blacklisted token, fails, and wipes the session for good.
 apiClient.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
     const originalRequest = error.config as any;
-    if (error.response?.status === 401 && !originalRequest._retry) {
-      originalRequest._retry = true;
-      const refreshToken = localStorage.getItem('fams_refresh_token');
-      if (refreshToken) {
-        try {
-          const res = await axios.post(`${API_BASE_URL}/auth/token/refresh/`, {
-            refresh: refreshToken,
-          });
-          const newAccess = res.data.access;
-          localStorage.setItem('fams_access_token', newAccess);
-          if (originalRequest.headers) {
-            originalRequest.headers.Authorization = `Bearer ${newAccess}`;
-          }
-          return apiClient(originalRequest);
-        } catch (refreshErr) {
-          localStorage.removeItem('fams_access_token');
-          localStorage.removeItem('fams_refresh_token');
-          localStorage.removeItem('fams_user');
-          localStorage.removeItem('fams_employee');
-          window.location.href = '/login';
-        }
-      } else {
-        localStorage.removeItem('fams_access_token');
-        localStorage.removeItem('fams_user');
-        localStorage.removeItem('fams_employee');
-        window.location.href = '/login';
-      }
+    if (error.response?.status !== 401 || originalRequest._retry) {
+      return Promise.reject(error);
     }
-    return Promise.reject(error);
+
+    originalRequest._retry = true;
+    const refreshToken = localStorage.getItem('fams_refresh_token');
+
+    if (!refreshToken) {
+      clearStoredSession();
+      return Promise.reject(error);
+    }
+
+    // Single-flight guard: many components can 401 at once on a page load. With
+    // rotation enabled, firing one refresh per failed request means the 2nd+ calls
+    // send an already-blacklisted token and destroy a perfectly valid session.
+    if (!refreshPromise) {
+      refreshPromise = axios
+        .post(`${API_BASE_URL}/auth/token/refresh/`, { refresh: refreshToken })
+        .then((res) => {
+          const newAccess = res.data.access;
+          if (!newAccess) {
+            throw new Error('Refresh response did not include an access token.');
+          }
+          localStorage.setItem('fams_access_token', newAccess);
+          // Persist the rotated refresh token; discarding it is what caused the
+          // guaranteed logout on the following refresh.
+          if (res.data.refresh) {
+            localStorage.setItem('fams_refresh_token', res.data.refresh);
+          }
+          return newAccess;
+        })
+        .finally(() => {
+          refreshPromise = null;
+        });
+    }
+
+    try {
+      const newAccess = await refreshPromise;
+      if (originalRequest.headers) {
+        originalRequest.headers.Authorization = `Bearer ${newAccess}`;
+      }
+      return apiClient(originalRequest);
+    } catch {
+      clearStoredSession();
+      return Promise.reject(error);
+    }
   }
 );
 

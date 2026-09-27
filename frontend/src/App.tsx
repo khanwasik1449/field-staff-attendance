@@ -1,6 +1,7 @@
-import React from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import React, { useEffect } from 'react';
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { SESSION_EXPIRED_EVENT } from './lib/api';
 import { Navbar } from './components/Navbar';
 import { Login } from './pages/Login';
 
@@ -27,6 +28,14 @@ const ProtectedRoute: React.FC<{
 }> = ({ children, allowedRole }) => {
   const { user, loading } = useAuth();
 
+  // Role mismatch is checked BEFORE the loading gate. A field assistant who lands
+  // on an admin URL is redirected immediately rather than sitting on a spinner at
+  // /admin until the server confirms the role. This branch only ever navigates
+  // away from a forbidden page, so the unverified role is never rendered.
+  if (user && allowedRole && user.role !== allowedRole) {
+    return <Navigate to={user.role === 'ADMIN' ? '/admin' : '/assistant'} replace />;
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -37,10 +46,6 @@ const ProtectedRoute: React.FC<{
 
   if (!user) {
     return <Navigate to="/login" replace />;
-  }
-
-  if (allowedRole && user.role !== allowedRole) {
-    return <Navigate to={user.role === 'ADMIN' ? '/admin' : '/assistant'} replace />;
   }
 
   return (
@@ -71,10 +76,28 @@ const RootRedirect: React.FC = () => {
   return <Navigate to="/assistant" replace />;
 };
 
+/**
+ * Redirects to /login in-app when the API client gives up on a session. This lives
+ * inside the router so the transition is a client-side navigation instead of a full
+ * page reload, which was causing a white flash and a remounted AuthProvider.
+ */
+const SessionWatcher: React.FC = () => {
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const onExpired = () => navigate('/login', { replace: true });
+    window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
+  }, [navigate]);
+
+  return null;
+};
+
 export function App() {
   return (
-    <AuthProvider>
-      <BrowserRouter>
+    <BrowserRouter>
+      <AuthProvider>
+        <SessionWatcher />
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<RootRedirect />} />
@@ -205,8 +228,8 @@ export function App() {
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
-      </BrowserRouter>
-    </AuthProvider>
+      </AuthProvider>
+    </BrowserRouter>
   );
 }
 

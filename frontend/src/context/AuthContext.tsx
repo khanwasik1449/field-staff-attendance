@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User, Employee, MeResponse, MeSettings } from '../types';
-import { apiClient, extractErrorMessage } from '../lib/api';
+import { apiClient, clearStoredSession, extractErrorMessage } from '../lib/api';
 
 interface AuthContextType {
   user: User | null;
@@ -88,10 +88,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = () => {
-    localStorage.removeItem('fams_access_token');
-    localStorage.removeItem('fams_refresh_token');
-    localStorage.removeItem('fams_user');
-    localStorage.removeItem('fams_employee');
+    clearStoredSession();
     try {
       document.cookie = 'sessionid=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;';
       document.cookie = 'csrftoken=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;';
@@ -99,7 +96,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUser(null);
     setEmployee(null);
     setSettings(null);
-    window.location.href = '/login';
   };
 
   const isAdmin = user?.role === 'ADMIN';

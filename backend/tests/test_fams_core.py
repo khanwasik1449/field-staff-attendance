@@ -539,3 +539,128 @@ class TestFAMSCore:
 
 
 
+
+    def test_refresh_token_rotation_contract(self):
+        """
+        SIMPLE_JWT runs with ROTATE_REFRESH_TOKENS + BLACKLIST_AFTER_ROTATION.
+        The client must persist the rotated refresh token it receives, otherwise the
+        next refresh replays a blacklisted token and logs the user out for good.
+        Locks that contract so the SPA fix cannot silently regress.
+        """
+        login = self.client.post('/api/v1/auth/login/', {
+            'username': 'testfa',
+            'password': 'fapassword'
+        })
+        original_refresh = login.data['refresh']
+
+        rotated = self.client.post('/api/v1/auth/token/refresh/', {
+            'refresh': original_refresh
+        })
+        assert rotated.status_code == status.HTTP_200_OK
+        assert 'access' in rotated.data
+        # Rotation must hand back a new refresh token for the SPA to persist.
+        assert 'refresh' in rotated.data
+        assert rotated.data['refresh'] != original_refresh
+
+        # The consumed token is blacklisted, so replaying it must fail.
+        replay = self.client.post('/api/v1/auth/token/refresh/', {
+            'refresh': original_refresh
+        })
+        assert replay.status_code == status.HTTP_401_UNAUTHORIZED
+
+        # Following the rotation chain with the new token keeps working.
+        chained = self.client.post('/api/v1/auth/token/refresh/', {
+            'refresh': rotated.data['refresh']
+        })
+        assert chained.status_code == status.HTTP_200_OK
+
+    def test_me_endpoint_exposes_gps_flags(self):
+        """
+        The mobile client needs the server-authoritative GPS flags on boot to decide
+        whether to request location permission at all.
+        """
+        res = self.client.get(
+            '/api/v1/auth/me/',
+            HTTP_AUTHORIZATION='Bearer ' + self._fa_access()
+        )
+        assert res.status_code == status.HTTP_200_OK
+        assert 'require_gps' in res.data['settings']
+        assert 'enforce_geofence' in res.data['settings']
+        assert res.data['settings']['require_gps'] is False
+
+    def test_admin_can_toggle_enforce_geofence(self):
+        """
+        enforce_geofence is persisted and audited but stays unenforced server-side:
+        out-of-site punches are recorded and flagged, never rejected.
+        """
+        res = self.client.patch(
+            '/api/v1/attendance/settings/',
+            {'enforce_geofence': True},
+            format='json',
+            HTTP_AUTHORIZATION='Bearer ' + self._admin_access()
+        )
+        assert res.status_code == status.HTTP_200_OK
+        assert res.data['enforce_geofence'] is True
+        self.setting.refresh_from_db()
+        assert self.setting.enforce_geofence is True
+        assert AuditLog.objects.filter(action='SETTING_UPDATED').exists()
+
+        # Field assistants cannot reach settings.
+        forbidden = self.client.patch(
+            '/api/v1/attendance/settings/',
+            {'enforce_geofence': False},
+            format='json',
+            HTTP_AUTHORIZATION='Bearer ' + self._fa_access()
+        )
+        assert forbidden.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_gps_requirement_enforced_by_setting(self):
+        """
+        GPS disabled (the default) must allow a punch with no coordinates; enabling
+        require_gps must then reject the same empty payload and accept one with
+        coordinates.
+        """
+        headers = {'HTTP_AUTHORIZATION': 'Bearer ' + self._fa_access()}
+        today = get_dhaka_date()
+
+        assert self.setting.require_gps is False
+        ok = self.client.post('/api/v1/attendance/check-in/', {}, format='json', **headers)
+        assert ok.status_code == status.HTTP_201_CREATED
+        assert Attendance.objects.filter(
+            employee=self.employee, attendance_date=today
+        ).exists()
+
+        # Isolate the next attempts from the record just created.
+        Attendance.objects.filter(employee=self.employee).delete()
+
+        self.setting.require_gps = True
+        self.setting.save()
+
+        blocked = self.client.post('/api/v1/attendance/check-in/', {}, format='json', **headers)
+        assert blocked.status_code == status.HTTP_400_BAD_REQUEST
+        assert not Attendance.objects.filter(
+            employee=self.employee, attendance_date=today
+        ).exists()
+
+        allowed = self.client.post('/api/v1/attendance/check-in/', {
+            'latitude': 23.8103,
+            'longitude': 90.4125,
+            'accuracy': 15
+        }, format='json', **headers)
+        assert allowed.status_code == status.HTTP_201_CREATED
+        record = Attendance.objects.get(employee=self.employee, attendance_date=today)
+        assert record.check_in_latitude is not None
+
+    def _fa_access(self):
+        res = self.client.post('/api/v1/auth/login/', {
+            'username': 'testfa',
+            'password': 'fapassword'
+        })
+        return res.data['access']
+
+    def _admin_access(self):
+        res = self.client.post('/api/v1/auth/login/', {
+            'username': 'testadmin',
+            'password': 'adminpassword'
+        })
+        return res.data['access']
