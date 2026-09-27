@@ -449,6 +449,9 @@ class AttendanceService:
 
         Each day reports an 'issue' of MISSED_CHECK_IN or MISSED_CHECK_OUT so
         the assistant can be offered the correct manual request for that day.
+
+        Days are returned newest-first, which is the order a history view reads
+        in, and is part of the response contract rather than incidental.
         """
         # Imported locally: requests.services imports this module, so a
         # module-level import of requests.models risks an import cycle.
@@ -545,7 +548,8 @@ class AttendanceService:
                 'total_working_minutes': total_minutes,
                 'total_working_display': format_duration_display(total_minutes) if total_minutes else '--',
             },
-            'days': days,
+            # Newest first: a history view reads top-down from the present.
+            'days': list(reversed(days)),
         }
 
     @staticmethod

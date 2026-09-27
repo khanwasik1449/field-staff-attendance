@@ -853,6 +853,19 @@ class TestFAMSCore:
         setting.work_days = '1,2,3,4,5,6'
         setting.full_clean()
 
+    def test_calendar_days_are_returned_newest_first(self):
+        """
+        Ordering is part of the response contract, not incidental: a history view
+        reads top-down from the present.
+        """
+        self._set_work_days('1,2,3,4,5')
+        today = get_dhaka_date()
+        cal = AttendanceService.get_monthly_calendar(self.employee, today.year, today.month)
+
+        dates = [datetime.strptime(d['date'], '%Y-%m-%d').date() for d in cal['days']]
+        assert dates == sorted(dates, reverse=True), "calendar days must be newest first"
+        assert dates, "expected at least one working day in the current month"
+
     def test_calendar_flags_missing_check_in_on_past_working_days(self):
         self._set_work_days('1,2,3,4,5')
         day = self._last_working_day(1)
