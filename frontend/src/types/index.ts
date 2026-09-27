@@ -110,6 +110,14 @@ export interface Attendance {
   updated_at: string;
 }
 
+export interface MissedCheckout {
+  count: number;
+  attendance_date: string;
+  check_in_time: string;
+  check_in_display: string;
+  attendance_id: number;
+}
+
 export interface TodayAttendanceResponse {
   server_datetime: string;
   server_date: string;
@@ -118,6 +126,7 @@ export interface TodayAttendanceResponse {
   is_checked_out: boolean;
   live_duration_minutes: number | null;
   live_duration_display: string;
+  missed_checkout: MissedCheckout | null;
   attendance: Attendance | null;
 }
 

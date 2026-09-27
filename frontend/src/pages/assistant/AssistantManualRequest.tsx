@@ -3,7 +3,7 @@ import { apiClient, extractErrorMessage } from '../../lib/api';
 import { ManualAttendanceRequest } from '../../types';
 import { StatusBadge } from '../../components/StatusBadge';
 import { FileQuestion, Send, CheckCircle2, AlertCircle, Clock, Calendar, HelpCircle } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 
 export const AssistantManualRequest: React.FC = () => {
   const [requests, setRequests] = useState<ManualAttendanceRequest[]>([]);
@@ -11,12 +11,22 @@ export const AssistantManualRequest: React.FC = () => {
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
+  // The dashboard links here with ?date=YYYY-MM-DD when a check-out was missed,
+  // so the form opens on the duty day that actually needs correcting.
+  // The param is ignored unless it is a well-formed date, so a hand-edited or
+  // stale link can never prefill the form with nonsense.
+  const [searchParams] = useSearchParams();
+  const dateParam = searchParams.get('date');
+  const missedDate = dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : null;
+
   // Form inputs
   const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
-  const [date, setDate] = useState(yesterday);
+  const [date, setDate] = useState(missedDate || yesterday);
   const [checkInTime, setCheckInTime] = useState('09:00');
   const [checkOutTime, setCheckOutTime] = useState('17:00');
-  const [reason, setReason] = useState('Forgot to check in.');
+  const [reason, setReason] = useState(
+    missedDate ? 'Forgot to check out during field duty.' : 'Forgot to check in.'
+  );
   const [remarks, setRemarks] = useState('');
 
   const fetchMyRequests = async () => {
@@ -63,6 +73,7 @@ export const AssistantManualRequest: React.FC = () => {
   };
 
   const reasonPresets = [
+    'Forgot to check out during field duty.',
     'Forgot to check in upon arrival.',
     'Mobile battery depleted during field duty.',
     'Device network connectivity issue in remote area.',

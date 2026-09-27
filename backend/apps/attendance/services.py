@@ -361,6 +361,45 @@ class AttendanceService:
             return attendance
 
     @staticmethod
+    def get_missed_checkout(employee, today=None):
+        """
+        Detects duty days that were checked in but never checked out.
+
+        The cutoff is implicit and server-derived: a record whose duty date is
+        strictly before the current Asia/Dhaka date has necessarily passed
+        23:59:59 of its own duty day, so it can no longer be closed by the
+        assistant and needs a ManualAttendanceRequest instead. The device clock
+        is never consulted.
+
+        Returns None when there is nothing outstanding.
+        """
+        if today is None:
+            today = get_dhaka_date()
+
+        outstanding = list(
+            Attendance.objects
+            .filter(
+                employee=employee,
+                check_in_time__isnull=False,
+                check_out_time__isnull=True,
+                attendance_date__lt=today
+            )
+            .order_by('-attendance_date')
+        )
+
+        if not outstanding:
+            return None
+
+        latest = outstanding[0]
+        return {
+            'count': len(outstanding),
+            'attendance_date': str(latest.attendance_date),
+            'check_in_time': latest.check_in_time.isoformat(),
+            'check_in_display': format_time_display(latest.check_in_time),
+            'attendance_id': latest.id,
+        }
+
+    @staticmethod
     def get_today_summary(employee):
         """
         Retrieves today's status, check-in/out timestamps, live duration, and server time.
@@ -387,6 +426,7 @@ class AttendanceService:
             'is_checked_out': attendance is not None and attendance.check_out_time is not None,
             'live_duration_minutes': live_duration_minutes,
             'live_duration_display': format_duration_display(live_duration_minutes) if live_duration_minutes is not None else "--",
+            'missed_checkout': AttendanceService.get_missed_checkout(employee, today),
         }
 
     @staticmethod

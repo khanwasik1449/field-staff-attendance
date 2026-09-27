@@ -9,7 +9,7 @@ from apps.accounts.models import User, Department, Project, Employee
 from apps.attendance.models import Attendance, AttendanceSetting
 from apps.requests.models import ManualAttendanceRequest
 from apps.audit.models import AuditLog
-from apps.attendance.services import get_dhaka_datetime, get_dhaka_date
+from apps.attendance.services import get_dhaka_datetime, get_dhaka_date, AttendanceService
 
 @pytest.mark.django_db
 class TestFAMSCore:
@@ -664,3 +664,121 @@ class TestFAMSCore:
             'password': 'adminpassword'
         })
         return res.data['access']
+
+    def test_no_missed_checkout_when_duty_is_closed(self):
+        """A completed check-in/check-out pair must never raise a warning."""
+        headers = {'HTTP_AUTHORIZATION': 'Bearer ' + self._fa_access()}
+
+        res = self.client.post('/api/v1/attendance/check-in/', {}, format='json', **headers)
+        assert res.status_code == status.HTTP_201_CREATED
+
+        today = get_dhaka_date()
+        # Close it retroactively so today looks like a finished duty day.
+        Attendance.objects.filter(employee=self.employee).update(
+            check_out_time=timezone.now(),
+            working_duration_minutes=480
+        )
+
+        summary = AttendanceService.get_today_summary(self.employee)
+        assert summary['missed_checkout'] is None
+
+    def test_today_unclosed_is_not_flagged_as_missed(self):
+        """
+        An assistant still on duty today has an unclosed record, but 11:59 PM has
+        not passed, so no warning and no manual request is warranted.
+        """
+        headers = {'HTTP_AUTHORIZATION': 'Bearer ' + self._fa_access()}
+        res = self.client.post('/api/v1/attendance/check-in/', {}, format='json', **headers)
+        assert res.status_code == status.HTTP_201_CREATED
+
+        summary = AttendanceService.get_today_summary(self.employee)
+        assert summary['is_checked_in'] is True
+        assert summary['is_checked_out'] is False
+        assert summary['missed_checkout'] is None
+
+    def test_missed_checkout_flagged_after_duty_day_ends(self):
+        """
+        A duty day checked in but never checked out is reported once its date is
+        behind the current Asia/Dhaka date, and the warning clears once an admin
+        closes it.
+        """
+        from datetime import time as _time
+
+        # Duty day = yesterday, checked in but never checked out.
+        yesterday = get_dhaka_date() - timedelta(days=1)
+        yesterday_9am = timezone.make_aware(
+            datetime.combine(yesterday, _time(9, 0, 0)),
+            timezone.get_current_timezone()
+        )
+        stale = Attendance.objects.create(
+            employee=self.employee,
+            attendance_date=yesterday,
+            check_in_time=yesterday_9am,
+            attendance_type=Attendance.Type.AUTOMATIC,
+            status=Attendance.Status.INCOMPLETE
+        )
+
+        summary = AttendanceService.get_today_summary(self.employee)
+        missed = summary['missed_checkout']
+        assert missed is not None
+        assert missed['count'] == 1
+        assert missed['attendance_date'] == str(yesterday)
+        assert missed['attendance_id'] == stale.id
+        assert missed['check_in_display']
+
+        # Surfaced over the API for the assistant's own dashboard.
+        headers = {'HTTP_AUTHORIZATION': 'Bearer ' + self._fa_access()}
+        res = self.client.get('/api/v1/attendance/today/', **headers)
+        assert res.status_code == status.HTTP_200_OK
+        assert res.data['missed_checkout']['attendance_date'] == str(yesterday)
+
+        # Once the record is closed the warning disappears.
+        stale.check_out_time = timezone.now()
+        stale.working_duration_minutes = 480
+        stale.save()
+        assert AttendanceService.get_today_summary(self.employee)['missed_checkout'] is None
+
+    def test_missed_checkout_counts_all_outstanding_days(self):
+        """Multiple unclosed duty days are reported with an accurate count."""
+        for offset in (1, 2):
+            day = get_dhaka_date() - timedelta(days=offset)
+            Attendance.objects.create(
+                employee=self.employee,
+                attendance_date=day,
+                check_in_time=timezone.now(),
+                attendance_type=Attendance.Type.AUTOMATIC,
+                status=Attendance.Status.INCOMPLETE
+            )
+
+        missed = AttendanceService.get_today_summary(self.employee)['missed_checkout']
+        assert missed is not None
+        assert missed['count'] == 2
+        # The most recent outstanding day is reported first.
+        assert missed['attendance_date'] == str(get_dhaka_date() - timedelta(days=1))
+
+    def test_missed_checkout_is_scoped_to_own_records(self):
+        """An assistant is only ever warned about their own unclosed duty days."""
+        from apps.accounts.models import User as _User
+
+        other = _User.objects.create_user(
+            username="otherfa",
+            password="otherpassword",
+            role=_User.Role.FIELD_ASSISTANT
+        )
+        Employee.objects.create(
+            user=other,
+            employee_id="FA-OTHER",
+            full_name="Other Assistant",
+            phone="+8801700000099",
+            is_active=True
+        )
+        Attendance.objects.create(
+            employee=other.employee_profile,
+            attendance_date=get_dhaka_date() - timedelta(days=1),
+            check_in_time=timezone.now(),
+            attendance_type=Attendance.Type.AUTOMATIC,
+            status=Attendance.Status.INCOMPLETE
+        )
+
+        assert AttendanceService.get_missed_checkout(self.employee) is None
+        assert AttendanceService.get_missed_checkout(other.employee_profile) is not None

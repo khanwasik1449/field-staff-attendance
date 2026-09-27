@@ -40,6 +40,7 @@ class TodayAttendanceView(APIView):
             'is_checked_out': summary['is_checked_out'],
             'live_duration_minutes': summary['live_duration_minutes'],
             'live_duration_display': summary['live_duration_display'],
+            'missed_checkout': summary['missed_checkout'],
             'attendance': attendance_data
         })
 

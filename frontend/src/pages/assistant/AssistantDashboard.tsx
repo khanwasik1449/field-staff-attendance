@@ -18,9 +18,21 @@ import {
   Sparkles,
   Navigation,
   ShieldCheck,
-  Radio
+  Radio,
+  AlertTriangle
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+
+const formatDutyDate = (isoDate: string): string => {
+  const [y, m, d] = isoDate.split('-').map(Number);
+  if (!y || !m || !d) return isoDate;
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
+};
 
 export const AssistantDashboard: React.FC = () => {
   const { employee, requireGps } = useAuth();
@@ -134,6 +146,17 @@ export const AssistantDashboard: React.FC = () => {
   const isCheckedIn = data?.is_checked_in ?? false;
   const isCheckedOut = data?.is_checked_out ?? false;
   const attendance = data?.attendance;
+  const missed = data?.missed_checkout ?? null;
+
+  const missedCheckoutMessage = !missed
+    ? ''
+    : missed.count > 1
+      ? `You have ${missed.count} duty days with no check-out. The most recent, ${formatDutyDate(
+          missed.attendance_date
+        )}, was checked in at ${missed.check_in_display} but never closed. The duty day has ended, so submit a manual check-out request for admin approval.`
+      : `Your duty on ${formatDutyDate(missed.attendance_date)} was checked in at ${
+          missed.check_in_display
+        } but never checked out. The duty day has ended, so submit a manual check-out request for admin approval.`;
 
   return (
     <div className="max-w-lg mx-auto px-3.5 sm:px-4 py-4 sm:py-6 space-y-4 sm:space-y-5">
@@ -180,9 +203,33 @@ export const AssistantDashboard: React.FC = () => {
         </div>
       </div>
 
+      {/* Missed check-out warning: a duty day was checked in but never closed,
+          so it passed 11:59 PM and can no longer be closed from the field. */}
+      {missed && (
+        <div className="rounded-2xl bg-amber-50 border-2 border-amber-400 p-3.5 sm:p-4 shadow-sm space-y-3">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <h2 className="text-xs sm:text-sm font-black text-amber-950 uppercase tracking-wide">
+                Missed Check-Out
+              </h2>
+              <p className="text-[11px] sm:text-xs text-amber-900 mt-1 leading-relaxed font-medium">
+                {missedCheckoutMessage}
+              </p>
+            </div>
+          </div>
+          <Link
+            to={`/assistant/requests?date=${missed.attendance_date}`}
+            className="flex items-center justify-center gap-2 w-full min-h-[48px] px-4 py-3 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-black uppercase tracking-wide shadow-md shadow-amber-600/25 transition-colors"
+          >
+            <FileQuestion className="w-4 h-4" />
+            Request Manual Check-Out
+          </Link>
+        </div>
+      )}
+
       {/* HTTPS Notice for Mobile GPS (if viewing on insecure HTTP) */}
-      {isHttp && requireGps && (
-        <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-2xl text-xs text-amber-950 flex items-center justify-between gap-2 shadow-xs">
+      {isHttp && requireGps && (        <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-2xl text-xs text-amber-950 flex items-center justify-between gap-2 shadow-xs">
           <div className="flex items-center gap-2">
             <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
             <span className="font-medium text-[11px]">Switch to HTTPS for GPS support</span>
