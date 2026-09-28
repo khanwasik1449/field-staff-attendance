@@ -29,6 +29,40 @@ const SCHEDULE_STYLES: Record<DaySchedule['code'], string> = {
   LV: 'bg-teal-50 text-teal-700 border-teal-200',
 };
 
+const UNKNOWN_SCHEDULE: DaySchedule = {
+  code: 'X',
+  label: '--',
+  short_label: '--',
+  name: null,
+  is_working: false,
+  start_time: null,
+  end_time: null,
+  source: 'DEFAULT',
+};
+
+/**
+ * Fills in every field the table reads. A frontend deployed against a backend
+ * that has not yet been restarted would otherwise dereference `day.schedule`
+ * on undefined and blank the whole page; this degrades those rows to blanks.
+ */
+const normalizeDay = (raw: Partial<CalendarDay> & { date?: string }): CalendarDay => ({
+  date: raw.date ?? '',
+  day: raw.day ?? 0,
+  weekday: raw.weekday ?? '',
+  weekday_short: raw.weekday_short ?? (raw.weekday ?? '').slice(0, 3),
+  schedule: raw.schedule ?? UNKNOWN_SCHEDULE,
+  remarks: raw.remarks ?? '',
+  is_today: raw.is_today ?? false,
+  is_future: raw.is_future ?? false,
+  day_has_ended: raw.day_has_ended ?? false,
+  attendance: raw.attendance ?? null,
+  issue: raw.issue ?? null,
+  pending_request_id: raw.pending_request_id ?? null,
+  pending_request_type: raw.pending_request_type ?? null,
+  can_request_check_in: raw.can_request_check_in ?? false,
+  can_request_check_out: raw.can_request_check_out ?? false,
+});
+
 const codeChip = (schedule: DaySchedule): React.ReactNode => {
   const style = SCHEDULE_STYLES[schedule.code] ?? SCHEDULE_STYLES.X;
   return (
@@ -88,10 +122,13 @@ export const AssistantHistory: React.FC = () => {
     try {
       // The server owns the schedule, the working calendar and the lateness
       // verdicts, so the client renders them without re-deriving anything.
-      const res = await apiClient.get('/attendance/my-calendar/', {
+      const res = await apiClient.get<MyCalendarResponse>('/attendance/my-calendar/', {
         params: { month, year },
       });
-      setData(res.data);
+      setData({
+        ...res.data,
+        days: (res.data?.days ?? []).map((d) => normalizeDay(d as Partial<CalendarDay> & { date?: string })),
+      });
     } catch (err) {
       setError(extractErrorMessage(err));
     } finally {

@@ -139,14 +139,24 @@ class TestFAMSCore:
         assert res3.status_code == status.HTTP_403_FORBIDDEN
 
     def _last_working_day(self, offset_days_back=0):
-        """Most recent configured working day, skipping back over non-working days."""
+        """
+        The (offset_days_back + 1)-th most recent configured working day.
+
+        Walks back one calendar day at a time and counts working days as it
+        goes, so distinct offsets always yield distinct dates. Anchoring at
+        (today - offset) and then skipping forward can collapse two offsets onto
+        the same day once consecutive calendar days are both working days.
+        """
         setting = AttendanceSetting.get_active()
-        day = get_dhaka_date() - timedelta(days=offset_days_back)
-        for _ in range(14):
+        day = get_dhaka_date()
+        remaining = offset_days_back
+        for _ in range(400):
             if setting.is_working_day(day):
-                return day
+                if remaining == 0:
+                    return day
+                remaining -= 1
             day -= timedelta(days=1)
-        raise AssertionError("no working day found in 14 days")
+        raise AssertionError("no working day found in 400 days")
 
     def _at(self, day, hhmm):
         """Timezone-aware timestamp for `hhmm` (e.g. '09:00') on the given day."""
