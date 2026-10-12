@@ -65,10 +65,6 @@ class AttendanceSetting(models.Model):
         default=False,
         help_text="Require GPS coordinates during mobile check-in/out"
     )
-    enforce_geofence = models.BooleanField(
-        default=False,
-        help_text="Strictly block check-in outside authorized site radius"
-    )
     is_active = models.BooleanField(default=True)
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -131,6 +127,16 @@ class Attendance(models.Model):
         INCOMPLETE = 'INCOMPLETE', 'Incomplete'
         ABSENT = 'ABSENT', 'Absent'
 
+    class ApprovalStatus(models.TextChoices):
+        """
+        Admin sign-off state for the duty day itself. Orthogonal to `Status`,
+        which records the attendance verdict (present/late/incomplete).
+        Only APPROVED rows count toward reports and payroll.
+        """
+        PENDING = 'PENDING', 'Pending'
+        APPROVED = 'APPROVED', 'Approved'
+        REJECTED = 'REJECTED', 'Rejected'
+
     employee = models.ForeignKey(
         Employee,
         on_delete=models.PROTECT,
@@ -166,7 +172,7 @@ class Attendance(models.Model):
         db_index=True
     )
 
-    # GPS Location & Geofencing fields
+    # GPS location captured at punch time (evidence of where the punch occurred)
     check_in_latitude = models.DecimalField(
         max_digits=9,
         decimal_places=6,
@@ -185,15 +191,6 @@ class Attendance(models.Model):
         null=True,
         blank=True,
         help_text="GPS accuracy in meters at check-in"
-    )
-    check_in_distance_meters = models.PositiveIntegerField(
-        null=True,
-        blank=True,
-        help_text="Distance in meters from assigned project site at check-in"
-    )
-    check_in_is_geofence_violation = models.BooleanField(
-        default=False,
-        help_text="True if check-in was outside project geofence perimeter"
     )
     check_in_address = models.CharField(
         max_length=255,
@@ -221,15 +218,6 @@ class Attendance(models.Model):
         blank=True,
         help_text="GPS accuracy in meters at check-out"
     )
-    check_out_distance_meters = models.PositiveIntegerField(
-        null=True,
-        blank=True,
-        help_text="Distance in meters from assigned project site at check-out"
-    )
-    check_out_is_geofence_violation = models.BooleanField(
-        default=False,
-        help_text="True if check-out was outside project geofence perimeter"
-    )
     check_out_address = models.CharField(
         max_length=255,
         blank=True,
@@ -237,7 +225,21 @@ class Attendance(models.Model):
         help_text="Human-readable physical location address at check-out"
     )
 
+    # Daily approval gate. Rows arrive PENDING (or are born APPROVED when an
+    # admin approved a correction request) and only APPROVED rows reach
+    # reports/payroll. Rejected rows are retained as evidence and must be
+    # explicitly voided to free the date for a re-punch.
+    approval_status = models.CharField(
+        max_length=20,
+        choices=ApprovalStatus.choices,
+        default=ApprovalStatus.PENDING,
+        db_index=True,
+        help_text="Admin sign-off state for the duty day"
+    )
+
     # Manual Approval Traceability fields
+    # For MANUAL rows these record the approver of the correction request; for
+    # AUTOMATIC rows they record the admin who approved the punched day.
     approved_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -270,6 +272,7 @@ class Attendance(models.Model):
             models.Index(fields=['attendance_date', 'status']),
             models.Index(fields=['employee', 'attendance_date']),
             models.Index(fields=['attendance_type']),
+            models.Index(fields=['approval_status', 'attendance_date']),
         ]
 
     def __str__(self):

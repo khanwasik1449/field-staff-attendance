@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { apiClient, extractErrorMessage } from '../../lib/api';
+import { useEmployeeTypes } from '../../hooks/useEmployeeTypes';
 import { MonthlyReportResponse, MonthlyReportRecord, DailyAttendanceItem, DayMetadata } from '../../types';
 import {
   Calendar,
@@ -20,14 +21,17 @@ import {
   CheckCircle2,
   Info,
   ChevronRight,
-  Filter
+  Filter,
+  Briefcase
 } from 'lucide-react';
 
 export const AdminMonthlyReport: React.FC = () => {
   const today = new Date();
   const [month, setMonth] = useState<number>(today.getMonth() + 1);
+  const { activeTypes: activeEmployeeTypes } = useEmployeeTypes();
   const [year, setYear] = useState<number>(today.getFullYear());
   const [search, setSearch] = useState('');
+  const [employeeTypeFilter, setEmployeeTypeFilter] = useState('');
   const [viewMode, setViewMode] = useState<'summary' | 'daywise'>('summary');
   const [data, setData] = useState<MonthlyReportResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -47,7 +51,7 @@ export const AdminMonthlyReport: React.FC = () => {
     setError(null);
     try {
       const res = await apiClient.get<MonthlyReportResponse>('/admin/reports/monthly/', {
-        params: { year, month }
+        params: { year, month, employee_type: employeeTypeFilter || undefined }
       });
       setData(res.data);
     } catch (err) {
@@ -59,7 +63,7 @@ export const AdminMonthlyReport: React.FC = () => {
 
   useEffect(() => {
     fetchMonthlyReport();
-  }, [month, year]);
+  }, [month, year, employeeTypeFilter]);
 
   const handleExport = (format: 'csv' | 'xlsx') => {
     const params = new URLSearchParams({
@@ -67,6 +71,7 @@ export const AdminMonthlyReport: React.FC = () => {
       month: month.toString(),
       format,
       view_type: viewMode,
+      ...(employeeTypeFilter && { employee_type: employeeTypeFilter }),
     });
 
     const prefix = viewMode === 'daywise' ? 'fra_monthly_attendance_muster_roll' : 'fra_monthly_attendance_summary';
@@ -93,7 +98,7 @@ export const AdminMonthlyReport: React.FC = () => {
         r.employee_name.toLowerCase().includes(q) ||
         r.employee_id.toLowerCase().includes(q) ||
         r.department.toLowerCase().includes(q) ||
-        (r.project && r.project.toLowerCase().includes(q))
+        (r.employee_type_display && r.employee_type_display.toLowerCase().includes(q))
       );
     });
   }, [data, search]);
@@ -398,11 +403,25 @@ export const AdminMonthlyReport: React.FC = () => {
           </select>
         </div>
 
+        <div className="flex items-center gap-2">
+          <Briefcase className="w-4 h-4 text-slate-400" />
+          <select
+            value={employeeTypeFilter}
+            onChange={(e) => setEmployeeTypeFilter(e.target.value)}
+            className="px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm font-bold text-slate-900 focus:ring-2 focus:ring-teal-500 focus:outline-none"
+          >
+            <option value="">All Employee Types</option>
+            {activeEmployeeTypes.map((t) => (
+              <option key={t.code} value={t.code}>{t.name}</option>
+            ))}
+          </select>
+        </div>
+
         <div className="relative w-full sm:w-80">
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
           <input
             type="text"
-            placeholder="Search assistant by name, ID, dept, project..."
+            placeholder="Search assistant by name, ID, dept, type..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:ring-2 focus:ring-teal-500 focus:outline-none"
@@ -599,7 +618,7 @@ export const AdminMonthlyReport: React.FC = () => {
                           <div className="text-[10px] text-slate-500 font-mono flex items-center gap-1 fa-sub-text print:text-slate-800 print:text-[8px] print:whitespace-normal">
                             <span className="font-bold print:text-black">{r.employee_id}</span>
                             <span>•</span>
-                            <span className="truncate max-w-[120px] print:max-w-none print:overflow-visible">{r.project || r.department}</span>
+                            <span className="truncate max-w-[120px] print:max-w-none print:overflow-visible">{r.employee_type_display || r.department}</span>
                           </div>
                         </td>
 
@@ -671,7 +690,7 @@ export const AdminMonthlyReport: React.FC = () => {
                   <tr>
                     <th className="py-2.5 px-3 text-center w-12">#</th>
                     <th className="py-2.5 px-4 fa-name-col print:text-black">Field Assistant</th>
-                    <th className="py-2.5 px-4">Department & Project</th>
+                    <th className="py-2.5 px-4">Department & Employee Type</th>
                     <th className="py-2.5 px-3 text-center text-emerald-300 print:text-emerald-800">Present</th>
                     <th className="py-2.5 px-3 text-center text-amber-300 print:text-amber-800">Late</th>
                     <th className="py-2.5 px-3 text-center text-violet-300 print:text-violet-800">Leave</th>
@@ -700,7 +719,7 @@ export const AdminMonthlyReport: React.FC = () => {
                       </td>
                       <td className="py-2.5 px-4">
                         <div className="font-semibold text-slate-800">{r.department}</div>
-                        <div className="text-[11px] text-slate-500">{r.project || '--'}</div>
+                        <div className="text-[11px] text-slate-500">{r.employee_type_display || r.employee_type}</div>
                       </td>
                       <td className="py-2.5 px-3 text-center font-black font-mono text-emerald-700 bg-emerald-50/40">
                         {r.present_days}
@@ -812,7 +831,7 @@ export const AdminMonthlyReport: React.FC = () => {
                     {selectedCell.record.employee_id} • {selectedCell.record.designation}
                   </div>
                   <div className="text-xs text-teal-800 font-medium mt-0.5">
-                    {selectedCell.record.project || selectedCell.record.department}
+                    {selectedCell.record.employee_type_display || selectedCell.record.department}
                   </div>
                 </div>
                 <div className="text-right">
@@ -966,7 +985,7 @@ export const AdminMonthlyReport: React.FC = () => {
                 <thead className="bg-slate-100 text-slate-700 font-bold uppercase text-[10px]">
                   <tr>
                     <th className="py-2.5 px-3">Field Assistant</th>
-                    <th className="py-2.5 px-3">Project / Site</th>
+                    <th className="py-2.5 px-3">Employee Type</th>
                     <th className="py-2.5 px-3 text-center">Status</th>
                     <th className="py-2.5 px-3">Check-In</th>
                     <th className="py-2.5 px-3">Check-Out</th>
@@ -982,7 +1001,7 @@ export const AdminMonthlyReport: React.FC = () => {
                         <div className="text-[10px] text-slate-500 font-mono">{record.employee_id}</div>
                       </td>
                       <td className="py-2.5 px-3 text-slate-700 font-medium">
-                        {record.project || record.department}
+                        {record.employee_type_display || record.department}
                       </td>
                       <td className="py-2.5 px-3 text-center">
                         <span className={`inline-block px-2.5 py-0.5 rounded-lg text-[10px] font-black border ${getCodeBadgeClass(dayItem.code)}`}>

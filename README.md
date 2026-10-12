@@ -1,6 +1,26 @@
-# FRA - Field Research Assistants
+# FRA — Field Research Assistants
 
 An enterprise-grade, mobile-first attendance management and verification platform engineered for Field Research Assistants (FRA) and central administrators.
+
+---
+
+## 🖼️ Screenshots
+
+| Login | Admin Dashboard |
+|---|---|
+| ![Login](screenshots/01-login.png) | ![Admin Dashboard](screenshots/02-admin-dashboard.png) |
+
+| Daily Attendance Register | Monthly Attendance Register |
+|---|---|
+| ![Daily Report](screenshots/05-admin-daily-report.png) | ![Monthly Report](screenshots/06-admin-monthly-report.png) |
+
+| Field Assistant Management | Employee Type Catalogue |
+|---|---|
+| ![Employees](screenshots/03-admin-employees.png) | ![Employee Types](screenshots/04-admin-employee-types.png) |
+
+| Individual Employee Dossier | Field Assistant Portal (Mobile-first) |
+|---|---|
+| ![Employee Report](screenshots/07-admin-employee-report.png) | ![Assistant](screenshots/08-assistant-today.png) |
 
 ---
 
@@ -14,15 +34,24 @@ An enterprise-grade, mobile-first attendance management and verification platfor
 2. **Concurrency & Race Condition Guard**:
    - Atomic transactions (`select_for_update()`) and database unique constraints (`employee_id, attendance_date`) prevent duplicate check-ins and check-outs under erratic field network conditions.
 
-3. **Separation of Concerns**:
+3. **Separation of Attendance Types**:
    - `AUTOMATIC`: Instant field check-ins with verified server time.
    - `MANUAL`: Formal exception request workflow submitted by assistants and reviewed/approved by administrators.
 
-4. **Immutable Audit Trail**:
-   - Every state transition (check-in, check-out, manual requests, approvals, profile changes) is logged into an append-only ledger capturing user, action, IP address, user-agent, and JSON state diffs.
+4. **Separate Admin Approval Queues**:
+   - **Daily Attendance Approval** — duty-day sign-off so records count toward payroll.
+   - **Manual Attendance Approval** — review of manual punch / correction requests.
+   - **Leave Approval** — review of leave applications plus holiday management.
+   - Each has its own dedicated page and quick action for admins.
 
-5. **Soft Deactivation**:
+5. **Immutable Audit Trail**:
+   - Every state transition (check-in, check-out, manual requests, approvals, profile changes, data corrections) is logged into an append-only ledger capturing user, action, IP address, user-agent, and JSON state diffs.
+
+6. **Soft Deactivation**:
    - Field assistants are deactivated rather than deleted, preserving 100% mathematical accuracy of past historical attendance reports.
+
+7. **Admin-Managed Employee Types**:
+   - Employee types are a DB-backed catalogue (create / rename / activate / deactivate), referenced by employees via a stable code. In-use types cannot be deleted, only deactivated.
 
 ---
 
@@ -31,20 +60,22 @@ An enterprise-grade, mobile-first attendance management and verification platfor
 * **Backend**: Django 5.1, Django REST Framework, SimpleJWT
 * **Database**: PostgreSQL 16 (with connection pooling and ACID constraints)
 * **Frontend**: React 18, TypeScript, Tailwind CSS, Vite, Lucide Icons
-* **Reverse Proxy & WSGI**: Nginx 1.24 + Gunicorn 26
+* **Reverse Proxy & WSGI**: Nginx + Gunicorn
 * **Export Engine**: OpenPyXL (Excel `.xlsx`) and streaming CSV
 
 ---
 
 ## 🔑 Demo Access Credentials
 
-| Role | Username | Password | Purpose |
+Field Assistants sign in with **Employee ID + Password** (no PIN).
+
+| Role | Employee ID / Username | Password | Purpose |
 |---|---|---|---|
 | **Administrator** | `admin` | `admin123` | Management, reports, approvals, audit trail, settings |
-| **Field Assistant** | `fa001` | `password123` | Rahim Ahmed - Senior Field Assistant |
-| **Field Assistant** | `fa002` | `password123` | Fatima Begum - Field Enumerator |
-| **Field Assistant** | `fa003` | `password123` | Tariqul Islam - Field Logistics Assistant |
-| **Field Assistant** | `fa004` | `password123` | Nasreen Akter - Junior Field Assistant |
+| **Field Assistant** | `FA-001` | `Fams@123` | Rahim Ahmed — Senior Field Assistant |
+| **Field Assistant** | `FA-002` | `Fams@123` | Fatima Begum — Field Enumerator |
+| **Field Assistant** | `FA-003` | `Fams@123` | Tariqul Islam — Field Logistics Assistant |
+| **Field Assistant** | `FA-004` | `Fams@123` | Nasreen Akter — Junior Field Assistant (Intern) |
 
 ---
 
@@ -69,6 +100,6 @@ An enterprise-grade, mobile-first attendance management and verification platfor
 
 ## 🌐 Endpoints & Web Portals
 
-* **Web Application**: `http://localhost/` (or port 80 via Nginx)
-* **API Base URL**: `http://localhost/api/v1/`
-* **Django Admin**: `http://localhost/admin/`
+* **Web Application**: `https://fams.202.168.244.109.sslip.io/`
+* **API Base URL**: `https://fams.202.168.244.109.sslip.io/api/v1/`
+* **Django Admin**: `https://fams.202.168.244.109.sslip.io/django-admin/`

@@ -31,52 +31,29 @@ class Department(models.Model):
         return f"{self.name} ({self.code})"
 
 
-class Project(models.Model):
-    name = models.CharField(max_length=150)
-    code = models.CharField(max_length=30, unique=True)
-    description = models.TextField(blank=True, default='')
-    division = models.CharField(
-        max_length=50,
-        blank=True,
-        default='',
-        help_text="Bangladesh Division (e.g. Dhaka, Chattogram)"
-    )
-    district = models.CharField(
-        max_length=50,
-        blank=True,
-        default='',
+class EmployeeType(models.Model):
+    """Admin-managed employee classification catalog (e.g. Field Staff, Intern).
+
+    Employees reference a type by its ``code`` string, so legacy records keep
+    working while admins can add/edit/deactivate types through the API. A type
+    still referenced by employees cannot be hard-deleted.
+    """
+    code = models.CharField(
+        max_length=30,
+        unique=True,
         db_index=True,
-        help_text="District / Zilla (e.g. Gazipur, Cumilla)"
+        help_text="Stable machine code stored on Employee (e.g. FIELD_STAFF)"
     )
-    upazila = models.CharField(
-        max_length=100,
-        blank=True,
-        default='',
-        help_text="Upazila / Thana (e.g. Tongi, Savar)"
-    )
-    latitude = models.DecimalField(
-        max_digits=9,
-        decimal_places=6,
-        null=True,
-        blank=True,
-        help_text="Target latitude for geofenced site check-in (auto-populated from district center)"
-    )
-    longitude = models.DecimalField(
-        max_digits=9,
-        decimal_places=6,
-        null=True,
-        blank=True,
-        help_text="Target longitude for geofenced site check-in (auto-populated from district center)"
-    )
-    radius_meters = models.PositiveIntegerField(
-        default=500,
-        help_text="Geofence boundary radius in meters"
-    )
+    name = models.CharField(max_length=100, help_text="Human-readable label, e.g. Field Staff")
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name']
 
     def __str__(self):
-        return f"{self.name} ({self.code})"
+        return self.name
 
 
 class Employee(models.Model):
@@ -100,31 +77,11 @@ class Employee(models.Model):
         blank=True,
         related_name='employees'
     )
-    project = models.ForeignKey(
-        Project,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='employees'
-    )
-    division = models.CharField(
-        max_length=50,
-        blank=True,
-        default='',
-        help_text="Bangladesh Division (e.g. Dhaka, Chattogram)"
-    )
-    district = models.CharField(
-        max_length=50,
-        blank=True,
-        default='',
+    employee_type = models.CharField(
+        max_length=30,
+        default='FIELD_STAFF',
         db_index=True,
-        help_text="Assigned District / Zilla (e.g. Gazipur, Sylhet)"
-    )
-    upazila = models.CharField(
-        max_length=100,
-        blank=True,
-        default='',
-        help_text="Assigned Upazila / Thana (e.g. Tongi, Sreepur)"
+        help_text="Staff classification code from the admin-managed EmployeeType catalog"
     )
     designation = models.CharField(max_length=100, default='Field Assistant')
     joining_date = models.DateField(default=timezone.localdate)
@@ -141,6 +98,13 @@ class Employee(models.Model):
 
     def __str__(self):
         return f"{self.employee_id} - {self.full_name}"
+
+    def get_employee_type_display(self):
+        """Resolve the human-readable type label from the admin catalog."""
+        if not self.employee_type:
+            return ''
+        type_obj = EmployeeType.objects.filter(code=self.employee_type).only('name').first()
+        return type_obj.name if type_obj else self.employee_type
 
     def deactivate(self):
         """Soft deactivation preserving historical attendance records."""

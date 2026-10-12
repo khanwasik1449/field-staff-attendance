@@ -2,18 +2,21 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, generics, viewsets
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from django.shortcuts import get_object_or_404
 from django.db.models import Q
 from .models import Attendance, AttendanceSetting
 from .schedule_services import ScheduleService
 from .serializers import (
+    BulkApproveSerializer,
     EmployeeScheduleBulkSerializer,
     AttendanceSerializer,
     AttendanceSettingSerializer,
     CheckInRequestSerializer,
     CheckOutRequestSerializer
 )
+from .approval_services import AttendanceApprovalService
 from .services import (
     AttendanceService,
     get_dhaka_datetime,
@@ -192,8 +195,112 @@ class AdminAttendanceViewSet(viewsets.ReadOnlyModelViewSet):
         department = self.request.query_params.get('department')
         if department:
             qs = qs.filter(employee__department_id=department)
+        employee_type = self.request.query_params.get('employee_type')
+        if employee_type:
+            qs = qs.filter(employee__employee_type=employee_type)
+
+        approval = self.request.query_params.get('approval_status')
+        if approval:
+            qs = qs.filter(approval_status=approval)
+
+        start = self.request.query_params.get('start_date')
+        if start:
+            qs = qs.filter(attendance_date__gte=start)
+        end = self.request.query_params.get('end_date')
+        if end:
+            qs = qs.filter(attendance_date__lte=end)
+
+        search = self.request.query_params.get('search')
+        if search:
+            qs = qs.filter(
+                Q(employee__employee_id__icontains=search)
+                | Q(employee__user__username__icontains=search)
+                | Q(employee__full_name__icontains=search)
+            )
 
         return qs
+
+    def _approval_response(self, att, message):
+        return Response(
+            {
+                'detail': message,
+                'attendance_id': att.id,
+                'approval_status': att.approval_status,
+                'employee_id': att.employee.employee_id,
+                'attendance_date': str(att.attendance_date),
+                'approved_by_username': att.approved_by.username if att.approved_by else None,
+                'approved_at': att.approved_at.isoformat() if att.approved_at else None,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=['post'], url_path='approve')
+    def approve(self, request, pk=None):
+        att = AttendanceApprovalService.approve(
+            pk, request.user,
+            remarks=request.data.get('admin_remarks', ''),
+            request=request,
+        )
+        return self._approval_response(
+            att,
+            f"Attendance for {att.employee.employee_id} on {att.attendance_date} approved.",
+        )
+
+    @action(detail=True, methods=['post'], url_path='reject')
+    def reject(self, request, pk=None):
+        att = AttendanceApprovalService.reject(
+            pk, request.user,
+            remarks=request.data.get('admin_remarks', ''),
+            request=request,
+        )
+        return self._approval_response(
+            att,
+            f"Attendance for {att.employee.employee_id} on {att.attendance_date} rejected.",
+        )
+
+    @action(detail=True, methods=['post'], url_path='void')
+    def void(self, request, pk=None):
+        snapshot = AttendanceApprovalService.void(
+            pk, request.user,
+            remarks=request.data.get('admin_remarks', ''),
+            request=request,
+        )
+        return Response(
+            {
+                'detail': (
+                    f"Attendance for {snapshot['employee_id']} on "
+                    f"{snapshot['attendance_date']} voided; the date is available for re-punch."
+                ),
+                'attendance_id': snapshot['attendance_id'],
+                'voided': True,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=False, methods=['post'], url_path='bulk-approve')
+    def bulk_approve(self, request):
+        serializer = BulkApproveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        approved_ids, _skipped = AttendanceApprovalService.bulk_approve(
+            attendance_date=serializer.validated_data['date'],
+            admin_user=request.user,
+            remarks=serializer.validated_data.get('admin_remarks', ''),
+            employee_ids=serializer.validated_data.get('employee_ids') or None,
+            request=request,
+        )
+        return Response(
+            {
+                'detail': (
+                    f"{len(approved_ids)} attendance record(s) approved for "
+                    f"{serializer.validated_data['date']}."
+                ),
+                'approved_count': len(approved_ids),
+                'attendance_ids': approved_ids,
+                'date': str(serializer.validated_data['date']),
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class AttendanceSettingView(APIView):

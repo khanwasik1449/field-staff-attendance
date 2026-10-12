@@ -1,5 +1,18 @@
 export type UserRole = 'ADMIN' | 'FIELD_ASSISTANT';
 
+/** Admin-managed employee type catalog: employees reference types by `code`. */
+export type EmployeeType = string;
+
+export interface EmployeeTypeOption {
+  id: number;
+  code: EmployeeType;
+  name: string;
+  is_active: boolean;
+  employee_count?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface User {
   id: number;
   username: string;
@@ -13,13 +26,10 @@ export interface Employee {
   employee_id: string;
   full_name: string;
   phone: string;
-  division?: string;
-  district?: string;
-  upazila?: string;
   department?: number;
   department_name?: string;
-  project?: number;
-  project_name?: string;
+  employee_type: EmployeeType;
+  employee_type_display?: string;
   designation: string;
   joining_date: string;
   is_active: boolean;
@@ -35,7 +45,6 @@ export interface MeSettings {
   late_grace_minutes: number;
   timezone: string;
   require_gps: boolean;
-  enforce_geofence: boolean;
 }
 
 export interface MeResponse {
@@ -44,19 +53,9 @@ export interface MeResponse {
   settings: MeSettings;
 }
 
-export interface Project {
-  id: number;
-  name: string;
-  code: string;
-  description?: string;
-  division?: string;
-  district?: string;
-  upazila?: string;
-  latitude?: string | number | null;
-  longitude?: string | number | null;
-  radius_meters: number;
-  is_active: boolean;
-  created_at?: string;
+export interface LoginResponse extends MeResponse {
+  access: string;
+  refresh: string;
 }
 
 export interface Department {
@@ -69,6 +68,8 @@ export interface Department {
 
 export type AttendanceType = 'AUTOMATIC' | 'MANUAL';
 export type AttendanceStatus = 'PRESENT' | 'LATE' | 'INCOMPLETE' | 'ABSENT' | 'ON_LEAVE' | 'HOLIDAY';
+/** Admin sign-off state for the duty day. Only APPROVED counts toward payroll. */
+export type AttendanceApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
 
 export interface Attendance {
   id: number;
@@ -76,10 +77,8 @@ export interface Attendance {
   employee_id: string;
   employee_name: string;
   department_name: string;
-  project_name?: string;
-  employee_division?: string;
-  employee_district?: string;
-  employee_upazila?: string;
+  employee_type: EmployeeType;
+  employee_type_display?: string;
   attendance_date: string;
   check_in_time: string;
   check_out_time: string | null;
@@ -92,15 +91,13 @@ export interface Attendance {
   check_in_latitude?: number | null;
   check_in_longitude?: number | null;
   check_in_accuracy?: number | null;
-  check_in_distance_meters?: number | null;
-  check_in_is_geofence_violation?: boolean;
   check_in_address?: string;
   check_out_latitude?: number | null;
   check_out_longitude?: number | null;
   check_out_accuracy?: number | null;
-  check_out_distance_meters?: number | null;
-  check_out_is_geofence_violation?: boolean;
   check_out_address?: string;
+  approval_status: AttendanceApprovalStatus;
+  approval_status_display?: string;
   approved_by?: number | null;
   approved_by_username?: string;
   approved_at?: string | null;
@@ -178,6 +175,9 @@ export interface CalendarDayAttendance {
   check_in_latitude: number | null;
   check_in_longitude: number | null;
   admin_remarks: string;
+  approval_status: AttendanceApprovalStatus;
+  approved_by_username?: string;
+  approved_at?: string | null;
 }
 
 /** Duty pattern for one calendar day, as shown in the register's Schedule column. */
@@ -220,6 +220,8 @@ export interface CalendarSummary {
   weekly_off_days: number;
   holiday_days: number;
   leave_days: number;
+  /** Days whose attendance exists but is still awaiting admin sign-off. */
+  pending_approval: number;
   total_working_minutes: number;
   total_working_display: string;
 }
@@ -301,8 +303,11 @@ export interface DashboardSummary {
   checked_out: number;
   on_duty?: number;
   incomplete: number;
-  geofence_violations: number;
   pending_manual_requests: number;
+  /** Duty days on this date still awaiting admin sign-off. */
+  pending_approval: number;
+  /** Duty days rejected by an admin; excluded from payroll. */
+  rejected: number;
   filtered_count: number;
 }
 
@@ -310,10 +315,8 @@ export interface DailyReportRecord {
   employee_id: string;
   employee_name: string;
   department: string;
-  project?: string;
-  district?: string;
-  division?: string;
-  upazila?: string;
+  employee_type: EmployeeType;
+  employee_type_display?: string;
   designation: string;
   check_in: string;
   check_out: string;
@@ -321,20 +324,18 @@ export interface DailyReportRecord {
   duration_minutes: number;
   type: string;
   status: string;
+  /** Null when the employee has no record for the date (absent/leave/holiday). */
+  approval_status: AttendanceApprovalStatus | null;
   approved_by: string;
   remarks: string;
   is_on_duty?: boolean;
   check_in_latitude?: number | null;
   check_in_longitude?: number | null;
   check_in_accuracy?: number | null;
-  check_in_distance_meters?: number | null;
-  check_in_is_geofence_violation?: boolean;
   check_in_address?: string;
   check_out_latitude?: number | null;
   check_out_longitude?: number | null;
   check_out_accuracy?: number | null;
-  check_out_distance_meters?: number | null;
-  check_out_is_geofence_violation?: boolean;
   check_out_address?: string;
 }
 
@@ -364,7 +365,6 @@ export interface DailyAttendanceItem {
   duration: string;
   duration_minutes: number;
   type: string;
-  is_geofence_violation?: boolean;
   check_in_address?: string;
   check_out_address?: string;
   remarks?: string;
@@ -374,7 +374,8 @@ export interface MonthlyReportRecord {
   employee_id: string;
   employee_name: string;
   department: string;
-  project?: string;
+  employee_type: EmployeeType;
+  employee_type_display?: string;
   designation: string;
   present_days: number;
   late_days: number;
@@ -383,7 +384,6 @@ export interface MonthlyReportRecord {
   weekend_days?: number;
   absent_days: number;
   manual_days: number;
-  geofence_violations: number;
   total_working_hours: string;
   total_working_minutes: number;
   days?: DailyAttendanceItem[];
@@ -426,46 +426,6 @@ export interface AttendanceSetting {
   full_day_minimum_minutes: number;
   timezone: string;
   require_gps: boolean;
-  enforce_geofence: boolean;
   is_active: boolean;
   updated_at: string;
-}
-
-export interface DistrictFAEmployee {
-  id: number;
-  employee_id: string;
-  full_name: string;
-  designation: string;
-  department: string;
-  project: string;
-  upazila: string;
-  phone: string;
-  status: string;
-  check_in: string;
-  check_out: string;
-  punch_address?: string;
-  is_violation: boolean;
-}
-
-export interface DistrictSummaryItem {
-  district: string;
-  division: string;
-  lat: number;
-  lon: number;
-  total_fas: number;
-  present_count: number;
-  late_count: number;
-  absent_count: number;
-  violation_count: number;
-  employees: DistrictFAEmployee[];
-  upazilas: string[];
-}
-
-export interface DistrictWiseSummaryResponse {
-  date: string;
-  total_districts: number;
-  total_active_fas: number;
-  unassigned_count: number;
-  unassigned_employees: DistrictFAEmployee[];
-  districts: DistrictSummaryItem[];
 }

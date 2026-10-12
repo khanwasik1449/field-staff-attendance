@@ -67,6 +67,13 @@ class ManualRequestService:
                     {"detail": f"{attendance_date.strftime('%A')} is not a working day in your schedule, so no check-in was missed."}
                 )
             if existing_attendance is not None:
+                if existing_attendance.approval_status == Attendance.ApprovalStatus.REJECTED:
+                    raise ConflictException(
+                        detail=(
+                            "An admin rejected the attendance record for this date. "
+                            "It must be voided by an admin before a new request can be filed."
+                        )
+                    )
                 raise ConflictException(
                     detail="An attendance record already exists for this date. Use a 'Missed Check-Out' request if only the check-out is missing."
                 )
@@ -201,6 +208,9 @@ class ManualRequestService:
                 attendance.approved_at = now
                 attendance.admin_remarks = admin_remarks or 'Approved via manual check-out request.'
                 attendance.manual_request = manual_req
+                # Approving a correction request IS the day's admin sign-off, so
+                # the row is born APPROVED rather than queued for a second click.
+                attendance.approval_status = Attendance.ApprovalStatus.APPROVED
                 attendance.save()
 
             else:
@@ -233,6 +243,9 @@ class ManualRequestService:
                     attendance.approved_at = now
                     attendance.admin_remarks = admin_remarks or 'Approved via manual request.'
                     attendance.manual_request = manual_req
+                    # Same rationale as the check-out branch: this admin decision
+                    # is the day's sign-off, so the row does not re-enter the queue.
+                    attendance.approval_status = Attendance.ApprovalStatus.APPROVED
                     attendance.save()
                 else:
                     # Create fresh attendance record
@@ -244,6 +257,7 @@ class ManualRequestService:
                         working_duration_minutes=duration_minutes,
                         attendance_type=Attendance.Type.MANUAL,
                         status=att_status,
+                        approval_status=Attendance.ApprovalStatus.APPROVED,
                         approved_by=admin_user,
                         approved_at=now,
                         admin_remarks=admin_remarks or 'Approved via manual request.',

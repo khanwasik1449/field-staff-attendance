@@ -1,26 +1,35 @@
 import io
 import csv
 import re
+import secrets
+import string
 from datetime import datetime, date
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from django.utils import timezone
 from django.db import transaction
-from django.db.models import Q
 
-from .models import User, Employee, Project, Department
+from .models import User, Employee, Department
 from apps.audit.services import AuditService
+from .password_policy import PasswordPolicyContext, validate_secure_password
+
+
+def generate_secure_default_password():
+    """Policy-compliant random initial password disclosed once to the uploading admin."""
+    alphabet = string.ascii_lowercase + string.digits
+    body = ''.join(secrets.choice(alphabet) for _ in range(10))
+    return f"F@{body}!"
 
 
 def normalize_header_name(header_val):
     if not header_val:
         return ''
     raw = str(header_val)
-    # Strip asterisks, notes inside brackets or parentheses e.g. (Zilla), (Thana), (YYYY-MM-DD)
+    # Strip asterisks, notes inside brackets or parentheses e.g. (Zilla), (YYYY-MM-DD)
     raw = re.sub(r'\(.*?\)', '', raw)
     raw = re.sub(r'\[.*?\]', '', raw)
     raw = raw.replace('*', '').strip()
-    
+
     cleaned = re.sub(r'[^a-zA-Z0-9_\-\s]', '', raw)
     cleaned = cleaned.strip().lower().replace(' ', '_').replace('-', '_')
     cleaned = re.sub(r'_+', '_', cleaned).strip('_')
@@ -29,24 +38,52 @@ def normalize_header_name(header_val):
         'employee_id': ['employee_id', 'employeeid', 'id', 'fa_id', 'faid', 'emp_id', 'empid', 'staff_id'],
         'full_name': ['full_name', 'fullname', 'name', 'employee_name', 'assistant_name', 'fa_name'],
         'username': ['username', 'user_name', 'login_username', 'login_id', 'user'],
-        'project_code': ['project_code', 'code', 'site_code'],
-        'project_name': ['project_name', 'site_name'],
-        'project': ['project', 'assigned_project', 'project_id', 'site', 'project_code_or_name'],
         'phone': ['phone', 'phone_number', 'mobile', 'mobile_number', 'contact', 'contact_number'],
         'email': ['email', 'email_address', 'mail'],
-        'division': ['division', 'bibhag'],
-        'district': ['district', 'zilla', 'district_name'],
-        'upazila': ['upazila', 'thana', 'upazilla'],
-        'designation': ['designation', 'role', 'title', 'position'],
+        'designation': ['designation', 'title', 'position'],
         'password': ['password', 'default_password', 'pass'],
         'department': ['department', 'dept', 'department_code', 'dept_code'],
         'joining_date': ['joining_date', 'join_date', 'date_of_joining', 'start_date'],
+        'employee_type': ['employee_type', 'type', 'staff_type', 'employment_type', 'category', 'role_type'],
     }
 
     for standard_key, alias_list in aliases.items():
         if cleaned in alias_list:
             return standard_key
     return cleaned
+
+
+def resolve_employee_type(raw_value):
+    """Map a free-text Employee Type cell onto a catalog code.
+
+    Matches against the admin-managed EmployeeType catalog by code, name, or
+    the historical hardcoded synonyms; falls back to the first active type
+    (or 'FIELD_STAFF') so uploads never hard-fail on an unrecognised cell.
+    """
+    from .models import EmployeeType
+    value = (raw_value or '').strip().lower().replace('-', ' ').replace('_', ' ')
+    value = re.sub(r'\s+', ' ', value)
+
+    legacy_synonyms = {
+        'intern': 'INTERN', 'interns': 'INTERN', 'internship': 'INTERN',
+        'trainee': 'INTERN',
+        'field staff': 'FIELD_STAFF', 'fieldstaff': 'FIELD_STAFF',
+        'field': 'FIELD_STAFF', 'staff': 'FIELD_STAFF',
+        'regular': 'FIELD_STAFF', 'permanent': 'FIELD_STAFF',
+        'employee': 'FIELD_STAFF',
+    }
+    if value in legacy_synonyms:
+        return legacy_synonyms[value]
+
+    types = list(EmployeeType.objects.all())
+    for t in types:
+        if t.code.lower() == value or t.name.lower() == value:
+            return t.code
+
+    active = [t for t in types if t.is_active]
+    if active:
+        return active[0].code
+    return 'FIELD_STAFF'
 
 
 class EmployeeBulkUploadService:
@@ -130,10 +167,10 @@ class EmployeeBulkUploadService:
         return rows, None
 
     @classmethod
-    def process_bulk_upload(cls, file_obj, filename="", default_project_id=None, request=None, admin_user=None):
+    def process_bulk_upload(cls, file_obj, filename="", request=None, admin_user=None):
         """
-        Processes bulk upload of project-based Field Assistants.
-        Validates, matches project sites, assigns districts, and creates user accounts atomically.
+        Processes bulk upload of Field Assistants.
+        Validates, assigns an employee type, and creates user accounts atomically.
         """
         rows, parse_error = cls.parse_rows(file_obj, filename)
         if parse_error:
@@ -160,13 +197,8 @@ class EmployeeBulkUploadService:
                 'errors': [{'row_number': 0, 'error': "No data rows found."}]
             }
 
-        all_projects = list(Project.objects.all())
         all_departments = list(Department.objects.all())
         default_dept = all_departments[0] if all_departments else None
-
-        default_project = None
-        if default_project_id:
-            default_project = Project.objects.filter(id=default_project_id).first()
 
         created_employees = []
         updated_employees = []
@@ -196,34 +228,6 @@ class EmployeeBulkUploadService:
                 })
                 continue
 
-            # Resolve Project
-            proj_val = (
-                row.get('project_code', '').strip()
-                or row.get('project', '').strip()
-                or row.get('project_name', '').strip()
-            )
-            target_project = None
-            if proj_val:
-                # 1. Match by exact code
-                target_project = next((p for p in all_projects if p.code.lower() == proj_val.lower()), None)
-                # 2. Match by exact name
-                if not target_project:
-                    target_project = next((p for p in all_projects if p.name.lower() == proj_val.lower()), None)
-                # 3. Match by partial name
-                if not target_project:
-                    target_project = next((p for p in all_projects if proj_val.lower() in p.name.lower()), None)
-
-            if not target_project and default_project:
-                target_project = default_project
-
-            if not target_project:
-                errors.append({
-                    'row_number': row_num,
-                    'employee_id': emp_id,
-                    'error': f"Project '{proj_val}' was not found in the system. Please provide a valid project code or choose a default project." if proj_val else "Project assignment is required for project-based Field Assistants."
-                })
-                continue
-
             # Resolve Department
             dept_val = row.get('department', '').strip()
             target_dept = default_dept
@@ -232,23 +236,12 @@ class EmployeeBulkUploadService:
                 if matched_dept:
                     target_dept = matched_dept
 
-            # Geographic Location inheritance
-            division = row.get('division', '').strip()
-            district = row.get('district', '').strip()
-            upazila = row.get('upazila', '').strip()
-
-            if target_project:
-                if not district and target_project.district:
-                    district = target_project.district
-                if not division and target_project.division:
-                    division = target_project.division
-                if not upazila and target_project.upazila:
-                    upazila = target_project.upazila
+            employee_type = resolve_employee_type(row.get('employee_type', ''))
 
             phone = row.get('phone', '').strip()
             email = row.get('email', '').strip()
             designation = row.get('designation', '').strip() or 'Field Assistant'
-            password = row.get('password', '').strip() or 'password123'
+            provided_password = row.get('password', '').strip() or ''
 
             joining_date_val = row.get('joining_date', '').strip()
             joining_date = timezone.localdate()
@@ -267,6 +260,27 @@ class EmployeeBulkUploadService:
                 cleaned_id = re.sub(r'[^a-zA-Z0-9]', '', emp_id).lower()
                 username = cleaned_id if cleaned_id else f"fa_{emp_id.lower()}"
 
+            # Secure password policy: reject weak passwords provided in the file and
+            # generate a compliant random default when the field is left blank.
+            password = ''
+            if provided_password:
+                try:
+                    validate_secure_password(
+                        provided_password,
+                        user=PasswordPolicyContext(username=username, email=email, full_name=full_name),
+                        full_name=full_name,
+                    )
+                except Exception as err:
+                    messages = ' '.join(getattr(err, 'messages', [])) or str(err)
+                    errors.append({
+                        'row_number': row_num,
+                        'employee_id': emp_id,
+                        'error': f"Weak password for {emp_id}: {messages}"
+                    })
+                    continue
+                password = provided_password
+            new_password = password or generate_secure_default_password()
+
             existing_emp = Employee.objects.filter(employee_id__iexact=emp_id).first()
 
             try:
@@ -276,18 +290,11 @@ class EmployeeBulkUploadService:
                         existing_emp.full_name = full_name
                         if phone:
                             existing_emp.phone = phone
-                        if target_project:
-                            existing_emp.project = target_project
                         if target_dept:
                             existing_emp.department = target_dept
-                        if division:
-                            existing_emp.division = division
-                        if district:
-                            existing_emp.district = district
-                        if upazila:
-                            existing_emp.upazila = upazila
                         if designation:
                             existing_emp.designation = designation
+                        existing_emp.employee_type = employee_type
                         existing_emp.is_active = True
                         existing_emp.save()
 
@@ -297,7 +304,7 @@ class EmployeeBulkUploadService:
                             user.email = email
                             user.save(update_fields=['email'])
 
-                        if password and password != 'password123':
+                        if password:
                             user.set_password(password)
                             user.save(update_fields=['password'])
 
@@ -307,16 +314,15 @@ class EmployeeBulkUploadService:
                             object_type='Employee',
                             object_id=existing_emp.id,
                             request=request,
-                            remarks=f"Bulk upload updated FA {existing_emp.employee_id} (Assigned to {target_project.name if target_project else 'No Project'})"
+                            remarks=f"Bulk upload updated FA {existing_emp.employee_id} ({existing_emp.get_employee_type_display()})"
                         )
 
                         updated_employees.append({
                             'employee_id': existing_emp.employee_id,
                             'full_name': existing_emp.full_name,
                             'username': user.username,
-                            'project_code': target_project.code if target_project else '--',
-                            'project_name': target_project.name if target_project else '--',
-                            'district': district or '--',
+                            'employee_type': existing_emp.employee_type,
+                            'employee_type_display': existing_emp.get_employee_type_display(),
                             'action': 'UPDATED'
                         })
 
@@ -332,7 +338,7 @@ class EmployeeBulkUploadService:
                         # Create new user and employee profile
                         user = User.objects.create_user(
                             username=username,
-                            password=password,
+                            password=new_password,
                             email=email,
                             role=User.Role.FIELD_ASSISTANT
                         )
@@ -342,11 +348,8 @@ class EmployeeBulkUploadService:
                             employee_id=emp_id,
                             full_name=full_name,
                             phone=phone,
-                            project=target_project,
                             department=target_dept,
-                            division=division,
-                            district=district,
-                            upazila=upazila,
+                            employee_type=employee_type,
                             designation=designation,
                             joining_date=joining_date,
                             is_active=True
@@ -361,20 +364,18 @@ class EmployeeBulkUploadService:
                             new_state={
                                 'employee_id': employee.employee_id,
                                 'full_name': employee.full_name,
-                                'project': target_project.name if target_project else None,
-                                'district': district
+                                'employee_type': employee.employee_type,
                             },
-                            remarks=f"Bulk upload created new FA {employee.employee_id} ({employee.full_name}) assigned to {target_project.name if target_project else 'No Project'}"
+                            remarks=f"Bulk upload created new FA {employee.employee_id} ({employee.full_name}, {employee.get_employee_type_display()})"
                         )
 
                         created_employees.append({
                             'employee_id': employee.employee_id,
                             'full_name': employee.full_name,
                             'username': user.username,
-                            'password': password,
-                            'project_code': target_project.code if target_project else '--',
-                            'project_name': target_project.name if target_project else '--',
-                            'district': district or '--',
+                            'password': new_password,
+                            'employee_type': employee.employee_type,
+                            'employee_type_display': employee.get_employee_type_display(),
                             'action': 'CREATED'
                         })
 
@@ -404,7 +405,7 @@ class EmployeeBulkUploadService:
     def generate_excel_template():
         """
         Generates a professionally styled Excel workbook template (.xlsx)
-        with sample rows, active projects directory, and guidance notes.
+        with sample rows and guidance notes.
         """
         wb = openpyxl.Workbook()
 
@@ -417,13 +418,9 @@ class EmployeeBulkUploadService:
             ("Employee ID *", 18),
             ("Full Name *", 24),
             ("Username", 18),
-            ("Project Code *", 18),
-            ("Project Name", 28),
+            ("Employee Type", 18),
             ("Phone Number", 18),
             ("Email Address", 24),
-            ("District (Zilla)", 20),
-            ("Upazila (Thana)", 20),
-            ("Division", 16),
             ("Designation", 20),
             ("Password", 16),
             ("Joining Date (YYYY-MM-DD)", 25),
@@ -449,57 +446,13 @@ class EmployeeBulkUploadService:
 
         ws1.row_dimensions[1].height = 28
 
-        projects = list(Project.objects.filter(is_active=True)[:5])
-        sample_proj_1 = projects[0] if len(projects) > 0 else None
-        sample_proj_2 = projects[1] if len(projects) > 1 else sample_proj_1
-        sample_proj_3 = projects[2] if len(projects) > 2 else sample_proj_1
-
         sample_rows = [
-            [
-                "FA-101",
-                "Mohammad Rahim Uddin",
-                "rahim101",
-                sample_proj_1.code if sample_proj_1 else "DHK-01",
-                sample_proj_1.name if sample_proj_1 else "Dhaka Urban Survey",
-                "01711223344",
-                "rahim@example.com",
-                sample_proj_1.district if sample_proj_1 and sample_proj_1.district else "Dhaka",
-                sample_proj_1.upazila if sample_proj_1 and sample_proj_1.upazila else "Mirpur",
-                sample_proj_1.division if sample_proj_1 and sample_proj_1.division else "Dhaka",
-                "Field Assistant",
-                "password123",
-                timezone.localdate().strftime('%Y-%m-%d')
-            ],
-            [
-                "FA-102",
-                "Fatema Begum",
-                "fatema102",
-                sample_proj_2.code if sample_proj_2 else "CTG-01",
-                sample_proj_2.name if sample_proj_2 else "Chittagong Coastal Mapping",
-                "01819334455",
-                "fatema@example.com",
-                sample_proj_2.district if sample_proj_2 and sample_proj_2.district else "Chattogram",
-                sample_proj_2.upazila if sample_proj_2 and sample_proj_2.upazila else "Pahartali",
-                sample_proj_2.division if sample_proj_2 and sample_proj_2.division else "Chattogram",
-                "Senior Field Assistant",
-                "password123",
-                timezone.localdate().strftime('%Y-%m-%d')
-            ],
-            [
-                "FA-103",
-                "Anowar Hossain",
-                "anowar103",
-                sample_proj_3.code if sample_proj_3 else "SYL-01",
-                sample_proj_3.name if sample_proj_3 else "Sylhet Tea Estate Survey Site",
-                "01912445566",
-                "anowar@example.com",
-                sample_proj_3.district if sample_proj_3 and sample_proj_3.district else "Sylhet",
-                sample_proj_3.upazila if sample_proj_3 and sample_proj_3.upazila else "Sreemangal",
-                sample_proj_3.division if sample_proj_3 and sample_proj_3.division else "Sylhet",
-                "Field Assistant",
-                "password123",
-                timezone.localdate().strftime('%Y-%m-%d')
-            ]
+            ["FA-101", "Mohammad Rahim Uddin", "rahim101", "Field Staff", "01711223344",
+             "rahim@example.com", "Field Assistant", "Secure@123", timezone.localdate().strftime('%Y-%m-%d')],
+            ["FA-102", "Fatema Begum", "fatema102", "Field Staff", "01819334455",
+             "fatema@example.com", "Senior Field Assistant", "Secure@123", timezone.localdate().strftime('%Y-%m-%d')],
+            ["IN-101", "Anowar Hossain", "anowar101", "Intern", "01912445566",
+             "anowar@example.com", "Intern", "Secure@123", timezone.localdate().strftime('%Y-%m-%d')],
         ]
 
         sample_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
@@ -512,55 +465,39 @@ class EmployeeBulkUploadService:
                 cell.fill = sample_fill
                 cell.font = sample_font
                 cell.border = border_thin
-                if c_idx in (1, 3, 6, 12, 13):
+                if c_idx in (1, 3, 4, 5, 8, 9):
                     cell.alignment = Alignment(horizontal="center", vertical="center")
                 else:
                     cell.alignment = Alignment(horizontal="left", vertical="center")
 
-        # Sheet 2: Active Projects Reference Guide
-        ws2 = wb.create_sheet(title="Active Projects Guide")
+        # Sheet 2: Employee Types Reference Guide
+        ws2 = wb.create_sheet(title="Employee Types Guide")
         ws2.views.sheetView[0].showGridLines = True
 
-        proj_headers = [
-            ("Project Code", 16),
-            ("Project Name", 32),
-            ("Division", 18),
-            ("District (Zilla)", 20),
-            ("Upazila (Thana)", 20),
-            ("Active FAs", 14),
+        guide_headers = [
+            ("Employee Type", 24),
+            ("Description", 60),
         ]
-
-        proj_header_fill = PatternFill(start_color="047857", end_color="047857", fill_type="solid")
-        for col_idx, (header_text, width) in enumerate(proj_headers, start=1):
+        guide_header_fill = PatternFill(start_color="047857", end_color="047857", fill_type="solid")
+        for col_idx, (header_text, width) in enumerate(guide_headers, start=1):
             cell = ws2.cell(row=1, column=col_idx, value=header_text)
-            cell.fill = proj_header_fill
+            cell.fill = guide_header_fill
             cell.font = header_font
             cell.alignment = Alignment(horizontal="center", vertical="center")
             cell.border = border_thin
             col_letter = openpyxl.utils.get_column_letter(col_idx)
             ws2.column_dimensions[col_letter].width = width
 
-        ws2.row_dimensions[1].height = 26
-
-        all_projects = Project.objects.filter(is_active=True).order_by('code')
-        for r_idx, p in enumerate(all_projects, start=2):
-            ws2.row_dimensions[r_idx].height = 20
-            p_data = [
-                p.code,
-                p.name,
-                p.division or '--',
-                p.district or '--',
-                p.upazila or '--',
-                p.employees.count()
-            ]
-            for c_idx, val in enumerate(p_data, start=1):
+        guide_rows = [
+            ("Field Staff", "Regular field-based staff. Default type when left blank."),
+            ("Intern", "Interns and trainees on a temporary arrangement."),
+        ]
+        for r_idx, row_data in enumerate(guide_rows, start=2):
+            for c_idx, val in enumerate(row_data, start=1):
                 cell = ws2.cell(row=r_idx, column=c_idx, value=val)
                 cell.font = sample_font
                 cell.border = border_thin
-                if c_idx in (1, 6):
-                    cell.alignment = Alignment(horizontal="center", vertical="center")
-                else:
-                    cell.alignment = Alignment(horizontal="left", vertical="center")
+                cell.alignment = Alignment(horizontal="left", vertical="center")
 
         output = io.BytesIO()
         wb.save(output)
@@ -578,42 +515,24 @@ class EmployeeBulkUploadService:
             "Employee ID",
             "Full Name",
             "Username",
-            "Project Code",
-            "Project Name",
+            "Employee Type",
             "Phone Number",
             "Email Address",
-            "District",
-            "Upazila",
-            "Division",
             "Designation",
             "Password",
             "Joining Date"
         ]
         writer.writerow(headers)
 
-        projects = list(Project.objects.filter(is_active=True)[:3])
-        p1 = projects[0] if len(projects) > 0 else None
-        p2 = projects[1] if len(projects) > 1 else p1
-
         writer.writerow([
-            "FA-101", "Mohammad Rahim", "rahim101",
-            p1.code if p1 else "DHK-01",
-            p1.name if p1 else "Dhaka Urban Survey",
+            "FA-101", "Mohammad Rahim", "rahim101", "Field Staff",
             "01711223344", "rahim@example.com",
-            p1.district if p1 and p1.district else "Dhaka",
-            p1.upazila if p1 and p1.upazila else "Mirpur",
-            p1.division if p1 and p1.division else "Dhaka",
-            "Field Assistant", "password123", timezone.localdate().strftime('%Y-%m-%d')
+            "Field Assistant", "Secure@123", timezone.localdate().strftime('%Y-%m-%d')
         ])
         writer.writerow([
-            "FA-102", "Fatema Begum", "fatema102",
-            p2.code if p2 else "CTG-01",
-            p2.name if p2 else "Chittagong Coastal Mapping",
+            "IN-101", "Fatema Begum", "fatema101", "Intern",
             "01819334455", "fatema@example.com",
-            p2.district if p2 and p2.district else "Chattogram",
-            p2.upazila if p2 and p2.upazila else "Pahartali",
-            p2.division if p2 and p2.division else "Chattogram",
-            "Field Assistant", "password123", timezone.localdate().strftime('%Y-%m-%d')
+            "Intern", "Secure@123", timezone.localdate().strftime('%Y-%m-%d')
         ])
 
         return output.getvalue().encode('utf-8-sig')

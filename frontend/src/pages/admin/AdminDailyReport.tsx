@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { apiClient, extractErrorMessage } from '../../lib/api';
+import { useEmployeeTypes } from '../../hooks/useEmployeeTypes';
 import { DailyReportResponse } from '../../types';
 import { StatusBadge } from '../../components/StatusBadge';
 import {
@@ -10,21 +11,23 @@ import {
   Printer,
   RefreshCw,
   AlertCircle,
-  MapPin,
   ArrowUpRight,
   ShieldCheck,
   Building2,
   Clock,
   CheckCircle2,
-  FileText
+  FileText,
+  Briefcase
 } from 'lucide-react';
 
 export const AdminDailyReport: React.FC = () => {
   const todayStr = new Date().toISOString().split('T')[0];
   const [selectedDate, setSelectedDate] = useState(todayStr);
+  const { activeTypes: activeEmployeeTypes } = useEmployeeTypes();
   const [statusFilter, setStatusFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [search, setSearch] = useState('');
+  const [employeeTypeFilter, setEmployeeTypeFilter] = useState('');
   const [data, setData] = useState<DailyReportResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -36,6 +39,7 @@ export const AdminDailyReport: React.FC = () => {
       const res = await apiClient.get<DailyReportResponse>('/admin/reports/daily/', {
         params: {
           date: selectedDate,
+          employee_type: employeeTypeFilter || undefined,
           status: statusFilter || undefined,
           attendance_type: typeFilter || undefined,
         }
@@ -50,12 +54,13 @@ export const AdminDailyReport: React.FC = () => {
 
   useEffect(() => {
     fetchDailyReport();
-  }, [selectedDate, statusFilter, typeFilter]);
+  }, [selectedDate, statusFilter, typeFilter, employeeTypeFilter]);
 
   const handleExport = (format: 'csv' | 'xlsx') => {
     const params = new URLSearchParams({
       date: selectedDate,
       format,
+      ...(employeeTypeFilter && { employee_type: employeeTypeFilter }),
       ...(statusFilter && { status: statusFilter }),
       ...(typeFilter && { attendance_type: typeFilter }),
     });
@@ -82,8 +87,7 @@ export const AdminDailyReport: React.FC = () => {
       r.employee_name.toLowerCase().includes(q) ||
       r.employee_id.toLowerCase().includes(q) ||
       r.department.toLowerCase().includes(q) ||
-      (r.project && r.project.toLowerCase().includes(q)) ||
-      (r.district && r.district.toLowerCase().includes(q))
+      (r.employee_type_display && r.employee_type_display.toLowerCase().includes(q))
     );
   }) || [];
 
@@ -205,11 +209,30 @@ export const AdminDailyReport: React.FC = () => {
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
             <input
               type="text"
-              placeholder="Search by ID, name, project, district..."
+              placeholder="Search by ID, name, department, type..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none"
             />
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+            Employee Type
+          </label>
+          <div className="relative">
+            <Briefcase className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+            <select
+              value={employeeTypeFilter}
+              onChange={(e) => setEmployeeTypeFilter(e.target.value)}
+              className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm font-medium focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+            >
+              <option value="">All Employee Types (সকল ধরন)</option>
+              {activeEmployeeTypes.map((t) => (
+                <option key={t.code} value={t.code}>{t.name}</option>
+              ))}
+            </select>
           </div>
         </div>
 
@@ -350,13 +373,13 @@ export const AdminDailyReport: React.FC = () => {
                 <tr>
                   <th className="py-2.5 px-3 text-center w-12">#</th>
                   <th className="py-2.5 px-3">Field Assistant</th>
-                  <th className="py-2.5 px-3">Department / Project</th>
-                  <th className="py-2.5 px-3">District & Zilla</th>
+                  <th className="py-2.5 px-3">Department / Employee Type</th>
                   <th className="py-2.5 px-3">Check In & Location</th>
                   <th className="py-2.5 px-3">Check Out & Location</th>
                   <th className="py-2.5 px-3 text-center">Duration</th>
                   <th className="py-2.5 px-2 text-center">Type</th>
                   <th className="py-2.5 px-3 text-center">Status</th>
+                  <th className="py-2.5 px-2 text-center">Approval</th>
                   <th className="py-2.5 px-3">HR Remarks / Approver</th>
                 </tr>
               </thead>
@@ -379,23 +402,10 @@ export const AdminDailyReport: React.FC = () => {
                       </div>
                     </td>
 
-                    {/* Department & Project */}
+                    {/* Department & Employee Type */}
                     <td className="py-2.5 px-3">
                       <div className="font-semibold text-slate-800">{r.department}</div>
-                      <div className="text-[11px] text-slate-500">{r.project || '--'}</div>
-                    </td>
-
-                    {/* District & Region */}
-                    <td className="py-2.5 px-3">
-                      {r.district ? (
-                        <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-[11px] font-bold text-emerald-900">
-                          <MapPin className="w-3 h-3 text-emerald-600 shrink-0" />
-                          <span>{r.district}</span>
-                          {r.upazila && <span className="font-medium text-emerald-700">({r.upazila})</span>}
-                        </div>
-                      ) : (
-                        <span className="text-slate-400 font-mono">--</span>
-                      )}
+                      <div className="text-[11px] text-slate-500">{r.employee_type_display || r.employee_type}</div>
                     </td>
 
                     {/* Check In */}
@@ -466,6 +476,15 @@ export const AdminDailyReport: React.FC = () => {
                     {/* Status */}
                     <td className="py-2.5 px-3 text-center">
                       <StatusBadge status={r.status} />
+                    </td>
+
+                    {/* Admin sign-off */}
+                    <td className="py-2.5 px-2 text-center">
+                      {r.approval_status ? (
+                        <StatusBadge status={r.approval_status} />
+                      ) : (
+                        <span className="text-[10px] text-slate-400">No record</span>
+                      )}
                     </td>
 
                     {/* Remarks / Approver */}

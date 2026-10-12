@@ -18,7 +18,8 @@ import {
   LayoutDashboard,
   HelpCircle,
   UploadCloud,
-  ExternalLink
+  ExternalLink,
+  ShieldCheck
 } from 'lucide-react';
 
 export const Navbar: React.FC = () => {
@@ -80,14 +81,15 @@ export const Navbar: React.FC = () => {
 
   const isDashboardActive = location.pathname === '/admin';
   const isOperationsActive =
-    location.pathname.startsWith('/admin/projects') ||
     location.pathname.startsWith('/admin/employees') ||
-    location.pathname.startsWith('/admin/accounts');
+    location.pathname.startsWith('/admin/accounts') ||
+    location.pathname.startsWith('/admin/employee-types');
   const isReportsActive =
     location.pathname.startsWith('/admin/daily') ||
     location.pathname.startsWith('/admin/monthly') ||
     location.pathname.startsWith('/admin/employee-report');
   const isApprovalsActive =
+    location.pathname.startsWith('/admin/attendance-approvals') ||
     location.pathname.startsWith('/admin/manual-requests') ||
     location.pathname.startsWith('/admin/leaves');
   const isSystemActive =
@@ -199,21 +201,8 @@ export const Navbar: React.FC = () => {
                   {activeDropdown === 'operations' && (
                     <div className="absolute top-full left-0 mt-2 w-72 rounded-2xl bg-slate-900 border border-slate-700/80 shadow-2xl py-2 z-50 backdrop-blur-xl animate-in fade-in zoom-in-95 duration-150">
                       <div className="px-3.5 py-1 text-[10px] font-black text-slate-400 uppercase tracking-wider border-b border-slate-800/80 mb-1">
-                        Workforce & Projects
+                        Workforce Management
                       </div>
-                      <Link
-                        to="/admin/projects"
-                        onClick={() => setActiveDropdown(null)}
-                        className={`flex items-start gap-3 px-3.5 py-2 hover:bg-slate-800 transition-colors ${
-                          location.pathname === '/admin/projects' ? 'bg-slate-800/80 text-blue-400 font-bold' : 'text-slate-200'
-                        }`}
-                      >
-                        <Briefcase className="w-4 h-4 mt-0.5 text-blue-400 shrink-0" />
-                        <div>
-                          <div className="text-sm font-semibold text-white">Projects & Work Sites</div>
-                          <div className="text-xs text-slate-400">Configure sites, geofences & upazilas</div>
-                        </div>
-                      </Link>
                       <Link
                         to="/admin/employees"
                         onClick={() => setActiveDropdown(null)}
@@ -236,6 +225,19 @@ export const Navbar: React.FC = () => {
                         <div>
                           <div className="text-sm font-semibold text-white">Bulk Upload FAs</div>
                           <div className="text-xs text-slate-400">Import assistants via Excel or CSV</div>
+                        </div>
+                      </Link>
+                      <Link
+                        to="/admin/employee-types"
+                        onClick={() => setActiveDropdown(null)}
+                        className={`flex items-start gap-3 px-3.5 py-2 hover:bg-slate-800 transition-colors ${
+                          location.pathname === '/admin/employee-types' ? 'bg-slate-800/80 text-emerald-400 font-bold' : 'text-slate-200'
+                        }`}
+                      >
+                        <Briefcase className="w-4 h-4 mt-0.5 text-cyan-400 shrink-0" />
+                        <div>
+                          <div className="text-sm font-semibold text-white">Employee Types</div>
+                          <div className="text-xs text-slate-400">Manage staff classifications</div>
                         </div>
                       </Link>
                     </div>
@@ -325,6 +327,22 @@ export const Navbar: React.FC = () => {
                   {activeDropdown === 'approvals' && (
                     <div className="absolute top-full left-0 mt-2 w-72 rounded-2xl bg-slate-900 border border-slate-700/80 shadow-2xl py-2 z-50 backdrop-blur-xl animate-in fade-in zoom-in-95 duration-150">
                       <div className="px-3.5 py-1 text-[10px] font-black text-slate-400 uppercase tracking-wider border-b border-slate-800/80 mb-1">
+                        Daily Attendance
+                      </div>
+                      <Link
+                        to="/admin/attendance-approvals"
+                        onClick={() => setActiveDropdown(null)}
+                        className={`flex items-start gap-3 px-3.5 py-2 hover:bg-slate-800 transition-colors ${
+                          location.pathname === '/admin/attendance-approvals' ? 'bg-slate-800/80 text-emerald-400 font-bold' : 'text-slate-200'
+                        }`}
+                      >
+                        <ShieldCheck className="w-4 h-4 mt-0.5 text-emerald-400 shrink-0" />
+                        <div>
+                          <div className="text-sm font-semibold text-white">Daily Attendance</div>
+                          <div className="text-xs text-slate-400">Approve each day's attendance before payroll</div>
+                        </div>
+                      </Link>
+                      <div className="px-3.5 py-1 text-[10px] font-black text-slate-400 uppercase tracking-wider border-b border-slate-800/80 mb-1 mt-1">
                         Requests & Leaves
                       </div>
                       <Link
@@ -537,18 +555,8 @@ export const Navbar: React.FC = () => {
               {/* Operations Group */}
               <div className="space-y-1 bg-slate-900/60 p-2.5 rounded-2xl border border-slate-700/60">
                 <div className="px-2 text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
-                  Operations (প্রকল্প ও কর্মী)
+                  Operations (কর্মী ব্যবস্থাপনা)
                 </div>
-                <Link
-                  to="/admin/projects"
-                  onClick={() => setMobileMenuOpen(false)}
-                  className={`flex items-center gap-2 px-2.5 py-2 rounded-xl text-sm font-semibold ${
-                    isActive('/admin/projects') ? 'bg-blue-600 text-white font-bold' : 'text-slate-300 hover:bg-slate-750'
-                  }`}
-                >
-                  <Briefcase className="w-4 h-4 text-blue-400" />
-                  <span>Projects & Work Sites</span>
-                </Link>
                 <Link
                   to="/admin/employees"
                   onClick={() => setMobileMenuOpen(false)}
@@ -566,6 +574,16 @@ export const Navbar: React.FC = () => {
                 >
                   <UploadCloud className="w-4 h-4 text-amber-400" />
                   <span>Bulk Upload FAs</span>
+                </Link>
+                <Link
+                  to="/admin/employee-types"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className={`flex items-center gap-2 px-2.5 py-2 rounded-xl text-sm font-semibold ${
+                    isActive('/admin/employee-types') ? 'bg-emerald-600 text-white font-bold' : 'text-slate-300 hover:bg-slate-750'
+                  }`}
+                >
+                  <Briefcase className="w-4 h-4 text-cyan-400" />
+                  <span>Employee Types</span>
                 </Link>
               </div>
 

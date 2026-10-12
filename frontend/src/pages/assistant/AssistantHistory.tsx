@@ -46,6 +46,7 @@ const UNKNOWN_SCHEDULE: DaySchedule = {
  * on undefined and blank the whole page; this degrades those rows to blanks.
  */
 const normalizeDay = (raw: Partial<CalendarDay> & { date?: string }): CalendarDay => ({
+  ...raw,
   date: raw.date ?? '',
   day: raw.day ?? 0,
   weekday: raw.weekday ?? '',
@@ -55,7 +56,9 @@ const normalizeDay = (raw: Partial<CalendarDay> & { date?: string }): CalendarDa
   is_today: raw.is_today ?? false,
   is_future: raw.is_future ?? false,
   day_has_ended: raw.day_has_ended ?? false,
-  attendance: raw.attendance ?? null,
+  attendance: raw.attendance
+    ? { ...raw.attendance, approval_status: raw.attendance.approval_status ?? 'PENDING' }
+    : null,
   issue: raw.issue ?? null,
   pending_request_id: raw.pending_request_id ?? null,
   pending_request_type: raw.pending_request_type ?? null,
@@ -68,6 +71,24 @@ const codeChip = (schedule: DaySchedule): React.ReactNode => {
   return (
     <span className={`inline-block text-[10px] font-black uppercase px-1.5 py-0.5 rounded border ${style}`}>
       {schedule.code}
+    </span>
+  );
+};
+
+const APPROVAL_STYLES: Record<string, string> = {
+  APPROVED: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  PENDING: 'bg-blue-50 text-blue-700 border-blue-200',
+  REJECTED: 'bg-rose-50 text-rose-700 border-rose-200',
+};
+
+/** Surfaces whether an admin has signed off the duty day. */
+const ApprovalChip: React.FC<{ status?: string | null }> = ({ status }) => {
+  if (!status) return null;
+  const style = APPROVAL_STYLES[status] ?? APPROVAL_STYLES.PENDING;
+  const label = status === 'PENDING' ? 'Pending' : status.charAt(0) + status.slice(1).toLowerCase();
+  return (
+    <span className={`inline-block text-[10px] font-black uppercase px-1.5 py-0.5 rounded border ${style}`}>
+      {label}
     </span>
   );
 };
@@ -232,6 +253,12 @@ export const AssistantHistory: React.FC = () => {
             <div className="text-lg font-black text-slate-800 font-mono">{data.summary.weekly_off_days}</div>
             <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Weekly Offs</div>
           </div>
+          <div className={`p-3 rounded-xl border text-center ${(data.summary.pending_approval ?? 0) > 0 ? 'bg-blue-50 border-blue-200' : 'bg-white border-slate-200'}`}>
+            <div className={`text-lg font-black font-mono ${(data.summary.pending_approval ?? 0) > 0 ? 'text-blue-700' : 'text-slate-800'}`}>
+              {data.summary.pending_approval ?? 0}
+            </div>
+            <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Awaiting Approval</div>
+          </div>
         </div>
       )}
 
@@ -318,6 +345,9 @@ export const AssistantHistory: React.FC = () => {
                           ) : <span className="text-slate-300">&mdash;</span>}
                         </td>
                         <td className="px-3 py-2.5 text-[11px] text-slate-500 max-w-[200px]">
+                          <span className="flex items-center gap-1 mb-0.5">
+                            <ApprovalChip status={att?.approval_status} />
+                          </span>
                           {day.remarks || <span className="text-slate-300">&mdash;</span>}
                           {att?.check_in_address && (
                             <span className="flex items-center gap-1 text-[10px] text-slate-400 mt-0.5">
@@ -398,6 +428,12 @@ export const AssistantHistory: React.FC = () => {
                     <div className="text-[10px] text-slate-400 italic mt-2 flex items-start gap-1">
                       <FileQuestion className="w-2.5 h-2.5 shrink-0 mt-0.5" />
                       <span>{day.remarks}</span>
+                    </div>
+                  )}
+
+                  {att?.approval_status && (
+                    <div className="mt-2">
+                      <ApprovalChip status={att.approval_status} />
                     </div>
                   )}
 

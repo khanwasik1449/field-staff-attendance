@@ -7,6 +7,7 @@ import json
 from datetime import date, datetime, time, timedelta
 from django.utils import timezone
 from django.db import transaction
+from django.db.models import Q
 from rest_framework import exceptions, status
 from rest_framework.views import exception_handler
 from rest_framework.response import Response
@@ -129,52 +130,25 @@ class AttendanceService:
     def check_in(employee, request=None, latitude=None, longitude=None, accuracy=None, address=None):
         """
         Executes an authoritative server-side check-in using Asia/Dhaka time.
-        Validates GPS, records real location address, and project geofencing boundary if configured.
-        Enforces database lock to prevent duplicate check-ins.
+        Validates GPS and records the real location address, using authoritative
+        server-side Asia/Dhaka time. Enforces database lock to prevent duplicate check-ins.
         """
         dhaka_now = get_dhaka_datetime()
         today = dhaka_now.date()
         setting = AttendanceSetting.get_active()
+
+        # Geolocation is temporarily disabled and toggled from the admin dashboard
+        # (Settings -> GPS & Geofencing). While `require_gps` is off we ignore any
+        # coordinates the client sends and never call the external reverse-geocoding
+        # service, so a punch can never block on an outbound HTTP request.
+        if not setting.require_gps:
+            latitude = longitude = accuracy = None
 
         # GPS Requirement Enforcement
         if setting.require_gps and (latitude is None or longitude is None):
             raise exceptions.ValidationError(
                 detail="GPS coordinates are required to check in. Please enable location services on your device."
             )
-
-        # Geofencing calculations against employee's assigned project site or district
-        distance_meters = None
-        is_geofence_violation = False
-        project = employee.project
-
-        target_lat = None
-        target_lon = None
-        target_radius = None
-        target_name = ""
-
-        if project and project.latitude is not None and project.longitude is not None:
-            target_lat = project.latitude
-            target_lon = project.longitude
-            target_radius = project.radius_meters
-            target_name = project.name
-        else:
-            dist_name = employee.district or (project.district if project else None)
-            if dist_name:
-                from apps.accounts.bangladesh_geo import get_district_center
-                d_lat, d_lon = get_district_center(dist_name)
-                if d_lat and d_lon:
-                    target_lat = d_lat
-                    target_lon = d_lon
-                    target_radius = 45000  # 45 km radius covers standard district boundary
-                    target_name = f"{dist_name} District"
-
-        if latitude is not None and longitude is not None and target_lat is not None and target_lon is not None:
-            distance_meters = calculate_haversine_distance(
-                latitude, longitude,
-                target_lat, target_lon
-            )
-            # No perimeter limitation: field assistants can record attendance from anywhere without perimeter violation flags
-            is_geofence_violation = False
 
         # Resolve human-readable address BEFORE opening the transaction. Reverse
         # geocoding is an outbound HTTP call (up to 2.5s) and must never run while
@@ -221,16 +195,12 @@ class AttendanceService:
                 check_in_latitude=latitude,
                 check_in_longitude=longitude,
                 check_in_accuracy=accuracy,
-                check_in_distance_meters=distance_meters,
-                check_in_is_geofence_violation=is_geofence_violation,
                 check_in_address=check_in_addr
             )
 
             remarks_parts = [f"Checked in at {format_time_display(dhaka_now)} ({attendance_status})"]
             if check_in_addr:
                 remarks_parts.append(f"Location: {check_in_addr}")
-            if distance_meters is not None:
-                remarks_parts.append(f"GPS: {distance_meters}m from site")
 
             AuditService.log(
                 user=employee.user,
@@ -247,8 +217,6 @@ class AttendanceService:
                     'longitude': str(longitude) if longitude is not None else None,
                     'accuracy': accuracy,
                     'address': check_in_addr,
-                    'distance_meters': distance_meters,
-                    'geofence_violation': is_geofence_violation
                 },
                 remarks=" | ".join(remarks_parts)
             )
@@ -265,39 +233,12 @@ class AttendanceService:
         today = dhaka_now.date()
         setting = AttendanceSetting.get_active()
 
-        # Geofencing calculations against employee's assigned project site or district
-        distance_meters = None
-        is_geofence_violation = False
-        project = employee.project
-
-        target_lat = None
-        target_lon = None
-        target_radius = None
-        target_name = ""
-
-        if project and project.latitude is not None and project.longitude is not None:
-            target_lat = project.latitude
-            target_lon = project.longitude
-            target_radius = project.radius_meters
-            target_name = project.name
-        else:
-            dist_name = employee.district or (project.district if project else None)
-            if dist_name:
-                from apps.accounts.bangladesh_geo import get_district_center
-                d_lat, d_lon = get_district_center(dist_name)
-                if d_lat and d_lon:
-                    target_lat = d_lat
-                    target_lon = d_lon
-                    target_radius = 45000  # 45 km radius covers standard district boundary
-                    target_name = f"{dist_name} District"
-
-        if latitude is not None and longitude is not None and target_lat is not None and target_lon is not None:
-            distance_meters = calculate_haversine_distance(
-                latitude, longitude,
-                target_lat, target_lon
-            )
-            # No perimeter limitation: field assistants can record attendance from anywhere without perimeter violation flags
-            is_geofence_violation = False
+        # Geolocation is temporarily disabled and toggled from the admin dashboard
+        # (Settings -> GPS & Geofencing). While `require_gps` is off we ignore any
+        # coordinates the client sends and never call the external reverse-geocoding
+        # service, so a punch can never block on an outbound HTTP request.
+        if not setting.require_gps:
+            latitude = longitude = accuracy = None
 
         # Resolve human-readable address BEFORE opening the transaction. Reverse
         # geocoding is an outbound HTTP call (up to 2.5s) and must never run while
@@ -334,14 +275,11 @@ class AttendanceService:
             attendance.check_out_latitude = latitude
             attendance.check_out_longitude = longitude
             attendance.check_out_accuracy = accuracy
-            attendance.check_out_distance_meters = distance_meters
-            attendance.check_out_is_geofence_violation = is_geofence_violation
             attendance.check_out_address = check_out_addr
 
             attendance.save(update_fields=[
                 'check_out_time', 'working_duration_minutes',
                 'check_out_latitude', 'check_out_longitude', 'check_out_accuracy',
-                'check_out_distance_meters', 'check_out_is_geofence_violation',
                 'check_out_address',
                 'updated_at'
             ])
@@ -364,8 +302,6 @@ class AttendanceService:
                     'longitude': str(longitude) if longitude is not None else None,
                     'accuracy': accuracy,
                     'address': check_out_addr,
-                    'distance_meters': distance_meters,
-                    'geofence_violation': is_geofence_violation
                 },
                 remarks=" | ".join(out_remarks)
             )
@@ -375,30 +311,33 @@ class AttendanceService:
     @staticmethod
     def get_missed_checkout(employee, today=None):
         """
-        Detects duty days that were checked in but never checked out.
+        Detects whether the employee's MOST RECENT duty day was checked in but
+        never checked out.
 
-        The cutoff is implicit and server-derived: a record whose duty date is
-        strictly before the current Asia/Dhaka date has necessarily passed
-        23:59:59 of its own duty day, so it can no longer be closed by the
-        assistant and needs a ManualAttendanceRequest instead. The device clock
-        is never consulted.
+        The warning is deliberately scoped to a single day: only the latest
+        scheduled working day strictly before today is considered. Older
+        un-closed shifts do not keep the banner alive, so an assistant is never
+        nagged about long-past days.
 
-        Only days the employee actually owes attendance for are considered,
+        The cutoff is server-derived from Asia/Dhaka and the device clock is
+        never consulted: a duty date before the current Dhaka date has already
+        passed 23:59:59 of its own day, so it can no longer be closed from the
+        field and needs a ManualAttendanceRequest instead.
+
+        Only days the employee actually owed attendance are considered,
         resolved from their per-employee schedule (ScheduleService), which falls
-        back to the company-wide working week. An assistant is never nagged to
-        file manual attendance for a weekly off, public holiday or leave day they
-        were not required to work.
+        back to the company-wide working week. An assistant is never flagged for
+        a weekly off, public holiday or leave day they were not required to work.
 
-        Returns None when there is nothing outstanding.
+        Returns None when the most recent duty day has no open shift.
         """
         if today is None:
             today = get_dhaka_date()
 
         setting = AttendanceSetting.get_active()
-        # A record is only outstanding if the employee owed duty that day, so
-        # the candidate dates come from the employee's own schedule rather than
-        # the company working week. Resolved in one pass to avoid an N+1.
-        window_start = today - timedelta(days=90)
+        # The window only has to be wide enough to locate the latest scheduled
+        # working day; 31 days comfortably covers weekends, holidays and leave.
+        window_start = today - timedelta(days=31)
         working = [
             date.fromisoformat(s['date'])
             for s in ScheduleService.resolve_range(
@@ -409,27 +348,31 @@ class AttendanceService:
         if not working:
             return None
 
-        outstanding = list(
+        latest_duty_day = max(working)
+
+        outstanding = (
             Attendance.objects
             .filter(
+                # A rejected day is under admin dispute rather than an open
+                # shift. Pending days still count - they have no check-out yet.
+                ~Q(approval_status=Attendance.ApprovalStatus.REJECTED),
                 employee=employee,
                 check_in_time__isnull=False,
                 check_out_time__isnull=True,
-                attendance_date__in=working
+                attendance_date=latest_duty_day,
             )
-            .order_by('-attendance_date')
+            .first()
         )
 
         if not outstanding:
             return None
 
-        latest = outstanding[0]
         return {
-            'count': len(outstanding),
-            'attendance_date': str(latest.attendance_date),
-            'check_in_time': latest.check_in_time.isoformat(),
-            'check_in_display': format_time_display(latest.check_in_time),
-            'attendance_id': latest.id,
+            'count': 1,
+            'attendance_date': str(outstanding.attendance_date),
+            'check_in_time': outstanding.check_in_time.isoformat(),
+            'check_in_display': format_time_display(outstanding.check_in_time),
+            'attendance_id': outstanding.id,
         }
 
     @staticmethod
@@ -464,6 +407,9 @@ class AttendanceService:
             'check_in_latitude': float(rec.check_in_latitude) if rec.check_in_latitude is not None else None,
             'check_in_longitude': float(rec.check_in_longitude) if rec.check_in_longitude is not None else None,
             'admin_remarks': rec.admin_remarks,
+            'approval_status': rec.approval_status,
+            'approved_by_username': rec.approved_by.username if rec.approved_by else '',
+            'approved_at': rec.approved_at.isoformat() if rec.approved_at else None,
         }
 
     @staticmethod
@@ -527,6 +473,7 @@ class AttendanceService:
             'weekly_off_days': 0,
             'holiday_days': 0,
             'leave_days': 0,
+            'pending_approval': 0,
         }
         total_minutes = 0
 
@@ -564,6 +511,8 @@ class AttendanceService:
                     counts['complete_days'] += 1
                 if rec.working_duration_minutes:
                     total_minutes += rec.working_duration_minutes
+                if rec.approval_status == Attendance.ApprovalStatus.PENDING:
+                    counts['pending_approval'] += 1
 
             if issue == 'MISSED_CHECK_IN':
                 counts['missed_check_in'] += 1
@@ -579,6 +528,10 @@ class AttendanceService:
                 remarks = f"{schedule['name']} Leave" if schedule.get('name') else 'Approved Leave'
             elif is_future:
                 remarks = 'Upcoming'
+            elif rec is not None and rec.approval_status == Attendance.ApprovalStatus.REJECTED:
+                remarks = 'Rejected by admin - contact admin to re-punch'
+            elif rec is not None and rec.approval_status == Attendance.ApprovalStatus.PENDING:
+                remarks = 'Awaiting admin approval'
             elif rec is not None and rec.admin_remarks:
                 remarks = rec.admin_remarks
             elif rec is not None and rec.attendance_type == Attendance.Type.MANUAL:
@@ -669,9 +622,13 @@ class AttendanceService:
     @staticmethod
     def reset_today_attendance(employee=None, request=None, admin_user=None, target_date=None):
         """
-        Resets attendance record(s) for a given date (defaults to today in Asia/Dhaka).
-        Can reset for a specific employee or all employees.
-        Generates immutable audit logs for each record reset.
+        Voids attendance record(s) for a given date (defaults to today in
+        Asia/Dhaka). Can reset for a specific employee or all employees.
+
+        Rows are hard-deleted because (employee, attendance_date) is unique, so
+        a retained row would block the date forever. Each deletion writes a full
+        previous_state snapshot to the audit log first, which is what keeps this
+        compliant with the audit-immutability invariant.
         """
         if target_date is None:
             target_date = get_dhaka_date()
@@ -693,19 +650,22 @@ class AttendanceService:
                     'check_in_time': att.check_in_time.isoformat() if att.check_in_time else None,
                     'check_out_time': att.check_out_time.isoformat() if att.check_out_time else None,
                     'status': att.status,
+                    'approval_status': att.approval_status,
                     'duration_minutes': att.working_duration_minutes,
                 }
+                att.delete()
+
+                # Logged after the delete so the audit entry survives the row.
                 AuditService.log(
                     user=user,
-                    action='ATTENDANCE_UPDATED',
+                    action='ATTENDANCE_VOIDED',
                     object_type='Attendance',
-                    object_id=str(att.id),
+                    object_id=str(prev_state['attendance_id']),
                     request=request,
                     previous_state=prev_state,
                     new_state=None,
-                    remarks=f"Duty reset for employee {att.employee.employee_id} ({att.employee.user.username}) on {target_date} by {user.username if user else 'System'}."
+                    remarks=f"Duty reset for employee {prev_state['employee_id']} on {target_date} by {user.username if user else 'System'}."
                 )
-                att.delete()
 
             return count
 

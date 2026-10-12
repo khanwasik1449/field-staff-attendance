@@ -224,10 +224,10 @@ export const AdminSettings: React.FC = () => {
             <p className="text-[11px] text-slate-400 mt-1">Configured invariant standard: Asia/Dhaka (UTC+6).</p>
           </div>
 
-          {/* GPS and Geofencing Settings */}
+          {/* GPS Settings */}
           <div className="pt-4 border-t border-slate-100 space-y-3">
             <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-              GPS & Geofencing Security
+              GPS Location Security
             </h3>
 
             <div className="flex items-start gap-3 p-3.5 rounded-2xl bg-slate-50 border border-slate-200">
@@ -243,23 +243,6 @@ export const AdminSettings: React.FC = () => {
                 <div className="text-[11px] text-slate-500 mt-0.5">
                   Require field assistants' devices to supply accurate GPS coordinates during check-in and check-out.
                   When disabled, the mobile app never requests location permission and punches are recorded without coordinates.
-                </div>
-              </label>
-            </div>
-
-            <div className="flex items-start gap-3 p-3.5 rounded-2xl bg-slate-50 border border-slate-200">
-              <input
-                type="checkbox"
-                id="enforce_geofence"
-                checked={settings.enforce_geofence || false}
-                onChange={(e) => setSettings({ ...settings, enforce_geofence: e.target.checked })}
-                className="mt-0.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 h-4 w-4"
-              />
-              <label htmlFor="enforce_geofence" className="cursor-pointer">
-                <div className="text-xs font-bold text-slate-800">Enforce Geofence Perimeter</div>
-                <div className="text-[11px] text-slate-500 mt-0.5">
-                  Block check-in outside the assigned work site radius. This flag is saved and reported, but perimeter
-                  blocking is currently disabled server-side — out-of-site punches are recorded and flagged, never rejected.
                 </div>
               </label>
             </div>

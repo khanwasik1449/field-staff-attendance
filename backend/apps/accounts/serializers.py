@@ -1,8 +1,9 @@
 from rest_framework import serializers
 from django.contrib.auth import authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
-from .models import User, Department, Project, Employee
+from .models import User, Department, Employee, EmployeeType
 from django.db import transaction
+import re
 
 class DepartmentSerializer(serializers.ModelSerializer):
     class Meta:
@@ -10,37 +11,47 @@ class DepartmentSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'code', 'is_active', 'created_at']
 
 
-from .bangladesh_geo import get_district_center
+class EmployeeTypeSerializer(serializers.ModelSerializer):
+    employee_count = serializers.SerializerMethodField()
+    is_active = serializers.BooleanField(required=False, default=True)
 
-class ProjectSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Project
-        fields = [
-            'id', 'name', 'code', 'description',
-            'division', 'district', 'upazila',
-            'latitude', 'longitude', 'radius_meters',
-            'is_active', 'created_at'
-        ]
+        model = EmployeeType
+        fields = ['id', 'code', 'name', 'is_active', 'employee_count', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'employee_count', 'created_at', 'updated_at']
 
-    def create(self, validated_data):
-        district = validated_data.get('district')
-        # If admin specified district but not coordinates, automatically resolve center coordinates
-        if district and (validated_data.get('latitude') is None or validated_data.get('longitude') is None):
-            lat, lon = get_district_center(district)
-            if lat and lon:
-                validated_data['latitude'] = lat
-                validated_data['longitude'] = lon
-        return super().create(validated_data)
+    def get_employee_count(self, obj):
+        value = getattr(obj, 'employee_count', None)
+        if value is None:
+            value = Employee.objects.filter(employee_type=obj.code).count()
+        return value
 
-    def update(self, instance, validated_data):
-        district = validated_data.get('district', instance.district)
-        if district and ('latitude' not in validated_data or validated_data.get('latitude') is None):
-            lat, lon = get_district_center(district)
-            if lat and lon:
-                validated_data['latitude'] = lat
-                validated_data['longitude'] = lon
-        return super().update(instance, validated_data)
+    def validate_code(self, value):
+        code = (value or '').strip().upper()
+        if not code:
+            raise serializers.ValidationError("Code is required.")
+        if not re.fullmatch(r'[A-Z][A-Z0-9_]*', code):
+            raise serializers.ValidationError(
+                "Code must be a single uppercase token (letters, digits, underscores)."
+            )
+        return code
 
+
+
+
+def serialize_attendance_settings(setting):
+    """Server-authoritative attendance settings shared by /auth/login/ and /auth/me/.
+
+    Returning these with the login response lets the client hydrate the punch
+    screen without a second round-trip, which trims perceived login time.
+    """
+    return {
+        'work_start_time': str(setting.work_start_time),
+        'work_end_time': str(setting.work_end_time),
+        'late_grace_minutes': setting.late_grace_minutes,
+        'timezone': setting.timezone,
+        'require_gps': setting.require_gps,
+    }
 
 class UserMinimalSerializer(serializers.ModelSerializer):
     class Meta:
@@ -50,8 +61,8 @@ class UserMinimalSerializer(serializers.ModelSerializer):
 
 class EmployeeSerializer(serializers.ModelSerializer):
     department_name = serializers.CharField(source='department.name', read_only=True)
-    project_name = serializers.CharField(source='project.name', read_only=True)
-    email = serializers.EmailField(source='user.email', read_only=True)
+    employee_type_display = serializers.CharField(source='get_employee_type_display', read_only=True)
+    email = serializers.EmailField(source='user.email', required=False, allow_blank=True)
     username = serializers.CharField(source='user.username', read_only=True)
     role = serializers.CharField(source='user.role', read_only=True)
 
@@ -59,12 +70,35 @@ class EmployeeSerializer(serializers.ModelSerializer):
         model = Employee
         fields = [
             'id', 'employee_id', 'full_name', 'phone',
-            'division', 'district', 'upazila',
-            'department', 'department_name', 'project', 'project_name',
+            'employee_type', 'employee_type_display',
+            'department', 'department_name',
             'designation', 'joining_date', 'is_active', 'deactivated_at',
             'email', 'username', 'role', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'deactivated_at', 'created_at', 'updated_at']
+
+    def validate_employee_type(self, value):
+        code = (value or '').strip()
+        if not code:
+            return value
+        type_obj = EmployeeType.objects.filter(code=code).first()
+        if not type_obj:
+            raise serializers.ValidationError(
+                f"Unknown employee type '{code}'. Pick a value from the Employee Types catalog."
+            )
+        if not type_obj.is_active and getattr(self.instance, 'employee_type', None) != code:
+            raise serializers.ValidationError(
+                f"Employee type '{type_obj.name}' is inactive. Reactivate it or pick another type."
+            )
+        return code
+
+    def update(self, instance, validated_data):
+        user_data = validated_data.pop('user', None)
+        employee = super().update(instance, validated_data)
+        if user_data and 'email' in user_data:
+            employee.user.email = user_data.get('email') or ''
+            employee.user.save(update_fields=['email'])
+        return employee
 
 
 from django.utils import timezone
@@ -74,31 +108,48 @@ class EmployeeCreateSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=6)
     email = serializers.EmailField(write_only=True, required=False, allow_blank=True)
     role = serializers.ChoiceField(choices=User.Role.choices, default=User.Role.FIELD_ASSISTANT, write_only=True)
+    employee_type = serializers.CharField(required=False, default=lambda: EmployeeType.objects.filter(is_active=True).values_list('code', flat=True).first() or 'FIELD_STAFF')
+    employee_type_display = serializers.CharField(source='get_employee_type_display', read_only=True)
     joining_date = serializers.DateField(required=False, default=timezone.localdate)
 
     class Meta:
         model = Employee
         fields = [
             'id', 'employee_id', 'full_name', 'phone',
-            'division', 'district', 'upazila',
-            'department', 'project', 'designation', 'joining_date',
+            'employee_type', 'employee_type_display',
+            'department', 'designation', 'joining_date',
             'username', 'password', 'email', 'role'
         ]
+
+    def validate_employee_type(self, value):
+        code = (value or '').strip()
+        if not code:
+            return code
+        type_obj = EmployeeType.objects.filter(code=code).first()
+        if not type_obj:
+            raise serializers.ValidationError(
+                f"Unknown employee type '{code}'. Pick a value from the Employee Types catalog."
+            )
+        if not type_obj.is_active:
+            raise serializers.ValidationError(
+                f"Employee type '{type_obj.name}' is inactive and cannot be assigned to new employees."
+            )
+        return code
+
+    def validate_password(self, value):
+        from .password_policy import PasswordPolicyContext, validate_secure_password
+        username = self.initial_data.get('username', '')
+        email = self.initial_data.get('email', '')
+        full_name = str(self.initial_data.get('full_name', '')).strip()
+        context = PasswordPolicyContext(username=username, email=email, full_name=full_name)
+        validate_secure_password(value, user=context, full_name=full_name)
+        return value
 
     def create(self, validated_data):
         username = validated_data.pop('username')
         password = validated_data.pop('password')
         email = validated_data.pop('email', '')
         role = validated_data.pop('role', User.Role.FIELD_ASSISTANT)
-
-        # If project is selected but employee's district is blank, inherit from project
-        proj = validated_data.get('project')
-        if proj and not validated_data.get('district') and proj.district:
-            validated_data['district'] = proj.district
-            if not validated_data.get('division'):
-                validated_data['division'] = proj.division
-            if not validated_data.get('upazila'):
-                validated_data['upazila'] = proj.upazila
 
         with transaction.atomic():
             user = User.objects.create_user(
@@ -126,6 +177,12 @@ class LoginSerializer(serializers.Serializer):
         if not user.is_active:
             raise serializers.ValidationError({"detail": "This account is inactive. Please contact an administrator."})
 
+        # Field Assistants must sign in through the Employee ID + password flow.
+        if user.is_field_assistant_user():
+            raise serializers.ValidationError(
+                {"detail": "Field Assistants must sign in with Employee ID and password."}
+            )
+
         refresh = RefreshToken.for_user(user)
         # Add custom claims
         refresh['role'] = user.role
@@ -135,9 +192,60 @@ class LoginSerializer(serializers.Serializer):
         if hasattr(user, 'employee_profile'):
             employee_data = EmployeeSerializer(user.employee_profile).data
 
+        from apps.attendance.models import AttendanceSetting
+        setting = AttendanceSetting.get_active()
+
         return {
             'refresh': str(refresh),
             'access': str(refresh.access_token),
             'user': UserMinimalSerializer(user).data,
-            'employee': employee_data
+            'employee': employee_data,
+            'settings': serialize_attendance_settings(setting),
+        }
+
+
+class FaLoginSerializer(serializers.Serializer):
+    """Field Assistant login: Employee ID + password.
+
+    The password is verified against the stored PBKDF2 hash. Rejects any non
+    field-assistant account and keeps all validation server-side.
+    """
+
+    employee_id = serializers.CharField()
+    password = serializers.CharField(write_only=True)
+
+    def validate(self, attrs):
+        raw = str(attrs.get('employee_id', '')).strip()
+        password = str(attrs.get('password', ''))
+        if not raw:
+            raise serializers.ValidationError({"detail": "Please enter your Employee ID."})
+        if not password:
+            raise serializers.ValidationError({"detail": "Please enter your password."})
+
+        employee = (
+            Employee.objects
+            .filter(employee_id__iexact=raw, is_active=True, user__is_active=True)
+            .select_related('user', 'department')
+            .first()
+        )
+        if not employee or not employee.user.is_field_assistant_user():
+            raise serializers.ValidationError({"detail": "Invalid Employee ID or password."})
+
+        if not employee.user.check_password(password):
+            raise serializers.ValidationError({"detail": "Invalid Employee ID or password."})
+
+        user = employee.user
+        refresh = RefreshToken.for_user(user)
+        refresh['role'] = user.role
+        refresh['username'] = user.username
+
+        from apps.attendance.models import AttendanceSetting
+        setting = AttendanceSetting.get_active()
+
+        return {
+            'refresh': str(refresh),
+            'access': str(refresh.access_token),
+            'user': UserMinimalSerializer(user).data,
+            'employee': EmployeeSerializer(employee).data,
+            'settings': serialize_attendance_settings(setting),
         }

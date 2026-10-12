@@ -7,32 +7,15 @@ import {
   CheckCircle2,
   AlertCircle,
   Calendar,
-  Timer,
   ArrowUpRight,
   LogOut,
   LogIn,
   MapPin,
-  Building2,
   FileQuestion,
   CalendarDays,
-  Sparkles,
-  Navigation,
-  ShieldCheck,
-  Radio,
-  AlertTriangle
+  Navigation
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-
-const formatDutyDate = (isoDate: string): string => {
-  const [y, m, d] = isoDate.split('-').map(Number);
-  if (!y || !m || !d) return isoDate;
-  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-GB', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    timeZone: 'UTC',
-  });
-};
 
 export const AssistantDashboard: React.FC = () => {
   const { employee, requireGps } = useAuth();
@@ -146,17 +129,6 @@ export const AssistantDashboard: React.FC = () => {
   const isCheckedIn = data?.is_checked_in ?? false;
   const isCheckedOut = data?.is_checked_out ?? false;
   const attendance = data?.attendance;
-  const missed = data?.missed_checkout ?? null;
-
-  const missedCheckoutMessage = !missed
-    ? ''
-    : missed.count > 1
-      ? `You have ${missed.count} duty days with no check-out. The most recent, ${formatDutyDate(
-          missed.attendance_date
-        )}, was checked in at ${missed.check_in_display} but never closed. The duty day has ended, so submit a manual check-out request for admin approval.`
-      : `Your duty on ${formatDutyDate(missed.attendance_date)} was checked in at ${
-          missed.check_in_display
-        } but never checked out. The duty day has ended, so submit a manual check-out request for admin approval.`;
 
   return (
     <div className="max-w-lg mx-auto px-3.5 sm:px-4 py-4 sm:py-6 space-y-4 sm:space-y-5">
@@ -178,13 +150,9 @@ export const AssistantDashboard: React.FC = () => {
                 <span className="font-mono font-bold text-emerald-400 bg-emerald-950/70 border border-emerald-800/60 px-1.5 py-0.5 rounded text-[11px]">
                   {employee?.employee_id}
                 </span>
-                {employee?.project_name ? (
+                {employee?.employee_type ? (
                   <span className="text-[11px] text-slate-300 font-medium truncate max-w-[170px]">
-                    • {employee.project_name}
-                  </span>
-                ) : employee?.district ? (
-                  <span className="text-[11px] text-slate-300 font-medium">
-                    • {employee.district}
+                    • {employee.employee_type_display || employee.employee_type}
                   </span>
                 ) : null}
               </div>
@@ -202,31 +170,6 @@ export const AssistantDashboard: React.FC = () => {
           </div>
         </div>
       </div>
-
-      {/* Missed check-out warning: a duty day was checked in but never closed,
-          so it passed 11:59 PM and can no longer be closed from the field. */}
-      {missed && (
-        <div className="rounded-2xl bg-amber-50 border-2 border-amber-400 p-3.5 sm:p-4 shadow-sm space-y-3">
-          <div className="flex items-start gap-2.5">
-            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-            <div className="min-w-0">
-              <h2 className="text-xs sm:text-sm font-black text-amber-950 uppercase tracking-wide">
-                Missed Check-Out
-              </h2>
-              <p className="text-[11px] sm:text-xs text-amber-900 mt-1 leading-relaxed font-medium">
-                {missedCheckoutMessage}
-              </p>
-            </div>
-          </div>
-          <Link
-            to={`/assistant/requests?date=${missed.attendance_date}&type=MISSED_CHECK_OUT`}
-            className="flex items-center justify-center gap-2 w-full min-h-[48px] px-4 py-3 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-black uppercase tracking-wide shadow-md shadow-amber-600/25 transition-colors"
-          >
-            <FileQuestion className="w-4 h-4" />
-            Request Manual Check-Out
-          </Link>
-        </div>
-      )}
 
       {/* HTTPS Notice for Mobile GPS (if viewing on insecure HTTP) */}
       {isHttp && requireGps && (        <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-2xl text-xs text-amber-950 flex items-center justify-between gap-2 shadow-xs">
@@ -310,7 +253,9 @@ export const AssistantDashboard: React.FC = () => {
         {!isCheckedIn && (
           <div className="py-3 sm:py-5 flex flex-col items-center">
             <p className="text-xs text-slate-500 max-w-xs leading-relaxed mb-6 font-medium">
-              Tap the button to capture your server-verified attendance and real GPS location.
+              {requireGps
+                ? 'Tap the button to capture your server-verified attendance and real GPS location.'
+                : 'Tap the button to capture your server-verified attendance.'}
             </p>
 
             {/* Glowing Concentric Punch Button */}
@@ -351,11 +296,13 @@ export const AssistantDashboard: React.FC = () => {
               </button>
             </div>
 
-            {/* GPS Location Ready Indicator */}
-            <div className="mt-6 inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-100 border border-slate-200 text-slate-600 text-[11px] font-semibold">
-              <Navigation className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-              <span>Real GPS Location Auto-Captured</span>
-            </div>
+            {/* GPS Location Ready Indicator (hidden while geolocation is disabled) */}
+            {requireGps && (
+              <div className="mt-6 inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-100 border border-slate-200 text-slate-600 text-[11px] font-semibold">
+                <Navigation className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <span>Real GPS Location Auto-Captured</span>
+              </div>
+            )}
           </div>
         )}
 
@@ -491,15 +438,6 @@ export const AssistantDashboard: React.FC = () => {
                 <span>Lat: {attendance.check_in_latitude}, Lng: {attendance.check_in_longitude}</span>
                 {attendance.check_in_accuracy && <span>±{attendance.check_in_accuracy}m accuracy</span>}
               </div>
-              {attendance.check_in_distance_meters !== null && attendance.check_in_distance_meters !== undefined && (
-                <div>
-                  <span className="inline-block px-2 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
-                    {attendance.check_in_distance_meters >= 1000
-                      ? `${(attendance.check_in_distance_meters / 1000).toFixed(1)} km from Site Center`
-                      : `${attendance.check_in_distance_meters}m from Site Center`}
-                  </span>
-                </div>
-              )}
             </div>
           )}
 
@@ -531,15 +469,6 @@ export const AssistantDashboard: React.FC = () => {
                 <span>Lat: {attendance.check_out_latitude}, Lng: {attendance.check_out_longitude}</span>
                 {attendance.check_out_accuracy && <span>±{attendance.check_out_accuracy}m accuracy</span>}
               </div>
-              {attendance.check_out_distance_meters !== null && attendance.check_out_distance_meters !== undefined && (
-                <div>
-                  <span className="inline-block px-2 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
-                    {attendance.check_out_distance_meters >= 1000
-                      ? `${(attendance.check_out_distance_meters / 1000).toFixed(1)} km from Site Center`
-                      : `${attendance.check_out_distance_meters}m from Site Center`}
-                  </span>
-                </div>
-              )}
           </div>
         )}
         </div>

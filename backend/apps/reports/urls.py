@@ -7,12 +7,10 @@ from .views import (
     MonthlyReportExportView,
     EmployeeReportView,
     EmployeeReportExportView,
-    DistrictWiseFASummaryView
 )
 
 urlpatterns = [
     path('dashboard-summary/', DashboardSummaryView.as_view(), name='dashboard_summary'),
-    path('district-summary/', DistrictWiseFASummaryView.as_view(), name='district_wise_fa_summary'),
     path('daily/', DailyReportView.as_view(), name='daily_report'),
     path('daily/export/', DailyReportExportView.as_view(), name='daily_report_export'),
     path('monthly/', MonthlyReportView.as_view(), name='monthly_report'),

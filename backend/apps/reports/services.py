@@ -19,16 +19,18 @@ from apps.attendance.services import (
 
 class ReportService:
     @staticmethod
-    def get_daily_report(report_date=None, department_id=None, status_filter=None, type_filter=None):
+    def get_daily_report(report_date=None, department_id=None, employee_type=None, status_filter=None, type_filter=None):
         if report_date is None:
             report_date = get_dhaka_date()
         elif isinstance(report_date, str):
             report_date = datetime.strptime(report_date, "%Y-%m-%d").date()
 
         # Fetch active employees
-        emp_qs = Employee.objects.select_related('department', 'project').filter(is_active=True)
+        emp_qs = Employee.objects.select_related('department').filter(is_active=True)
         if department_id:
             emp_qs = emp_qs.filter(department_id=department_id)
+        if employee_type:
+            emp_qs = emp_qs.filter(employee_type=employee_type)
 
         employees = list(emp_qs.order_by('employee_id'))
 
@@ -57,6 +59,13 @@ class ReportService:
             status=ManualAttendanceRequest.Status.PENDING
         ).count()
 
+        pending_approval_count = att_qs.filter(
+            approval_status=Attendance.ApprovalStatus.PENDING
+        ).count()
+        rejected_count = att_qs.filter(
+            approval_status=Attendance.ApprovalStatus.REJECTED
+        ).count()
+
         rows = []
         present_count = 0
         late_count = 0
@@ -66,37 +75,36 @@ class ReportService:
         checked_in_count = 0
         checked_out_count = 0
         incomplete_count = 0
-        geofence_violation_count = 0
 
         for emp in employees:
             att = att_map.get(emp.id)
             if att:
+                # Only APPROVED days feed the official tally. Pending and
+                # rejected rows are still listed (the admin needs to see the
+                # work) but must not inflate present/late/minutes for payroll.
+                is_approved = att.approval_status == Attendance.ApprovalStatus.APPROVED
                 is_checked_in = bool(att.check_in_time)
                 is_checked_out = bool(att.check_out_time)
-                
-                if is_checked_in:
-                    checked_in_count += 1
-                if is_checked_out:
-                    checked_out_count += 1
-                else:
-                    incomplete_count += 1
 
-                if att.status == Attendance.Status.PRESENT:
-                    present_count += 1
-                elif att.status == Attendance.Status.LATE:
-                    late_count += 1
+                if is_approved:
+                    if is_checked_in:
+                        checked_in_count += 1
+                    if is_checked_out:
+                        checked_out_count += 1
+                    else:
+                        incomplete_count += 1
 
-                if att.check_in_is_geofence_violation or att.check_out_is_geofence_violation:
-                    geofence_violation_count += 1
+                    if att.status == Attendance.Status.PRESENT:
+                        present_count += 1
+                    elif att.status == Attendance.Status.LATE:
+                        late_count += 1
 
                 row = {
                     'employee_id': emp.employee_id,
                     'employee_name': emp.full_name,
                     'department': emp.department.name if emp.department else "--",
-                    'project': emp.project.name if emp.project else "--",
-                    'district': emp.district or (emp.project.district if emp.project else "") or "",
-                    'division': emp.division or (emp.project.division if emp.project else "") or "",
-                    'upazila': emp.upazila or (emp.project.upazila if emp.project else "") or "",
+                    'employee_type': emp.employee_type,
+                    'employee_type_display': emp.get_employee_type_display(),
                     'designation': emp.designation,
                     'check_in': format_time_display(att.check_in_time),
                     'check_out': format_time_display(att.check_out_time) if att.check_out_time else "--",
@@ -104,20 +112,17 @@ class ReportService:
                     'duration_minutes': att.working_duration_minutes or 0,
                     'type': att.attendance_type,
                     'status': att.status,
+                    'approval_status': att.approval_status,
                     'approved_by': att.approved_by.username if att.approved_by else "--",
                     'remarks': att.admin_remarks or "",
-                    # GPS & Geofencing metadata
+                    # GPS capture metadata
                     'check_in_latitude': float(att.check_in_latitude) if att.check_in_latitude is not None else None,
                     'check_in_longitude': float(att.check_in_longitude) if att.check_in_longitude is not None else None,
                     'check_in_accuracy': att.check_in_accuracy,
-                    'check_in_distance_meters': att.check_in_distance_meters,
-                    'check_in_is_geofence_violation': att.check_in_is_geofence_violation,
                     'check_in_address': att.check_in_address or "",
                     'check_out_latitude': float(att.check_out_latitude) if att.check_out_latitude is not None else None,
                     'check_out_longitude': float(att.check_out_longitude) if att.check_out_longitude is not None else None,
                     'check_out_accuracy': att.check_out_accuracy,
-                    'check_out_distance_meters': att.check_out_distance_meters,
-                    'check_out_is_geofence_violation': att.check_out_is_geofence_violation,
                     'check_out_address': att.check_out_address or "",
                     'is_on_duty': is_checked_in and not is_checked_out,
                 }
@@ -141,10 +146,8 @@ class ReportService:
                     'employee_id': emp.employee_id,
                     'employee_name': emp.full_name,
                     'department': emp.department.name if emp.department else "--",
-                    'project': emp.project.name if emp.project else "--",
-                    'district': emp.district or (emp.project.district if emp.project else "") or "",
-                    'division': emp.division or (emp.project.division if emp.project else "") or "",
-                    'upazila': emp.upazila or (emp.project.upazila if emp.project else "") or "",
+                    'employee_type': emp.employee_type,
+                    'employee_type_display': emp.get_employee_type_display(),
                     'designation': emp.designation,
                     'check_in': "--",
                     'check_out': "--",
@@ -152,19 +155,16 @@ class ReportService:
                     'duration_minutes': 0,
                     'type': "--",
                     'status': status_name,
+                    'approval_status': None,
                     'approved_by': "--",
                     'remarks': remarks_text,
                     'check_in_latitude': None,
                     'check_in_longitude': None,
                     'check_in_accuracy': None,
-                    'check_in_distance_meters': None,
-                    'check_in_is_geofence_violation': False,
                     'check_in_address': "",
                     'check_out_latitude': None,
                     'check_out_longitude': None,
                     'check_out_accuracy': None,
-                    'check_out_distance_meters': None,
-                    'check_out_is_geofence_violation': False,
                     'check_out_address': "",
                     'is_on_duty': False,
                 }
@@ -189,36 +189,63 @@ class ReportService:
             'checked_out': checked_out_count,
             'on_duty': incomplete_count,
             'incomplete': incomplete_count,
-            'geofence_violations': geofence_violation_count,
             'pending_manual_requests': pending_requests_count,
+            'pending_approval': pending_approval_count,
+            'rejected': rejected_count,
             'filtered_count': len(rows)
         }
 
         return {'summary': summary, 'records': rows}
 
     @staticmethod
-    def get_monthly_report(year, month, department_id=None):
+    def get_monthly_report(year, month, department_id=None, employee_type=None):
         num_days = monthrange(year, month)[1]
         start_date = date(year, month, 1)
         end_date = date(year, month, num_days)
 
-        emp_qs = Employee.objects.select_related('department', 'project').filter(is_active=True)
+        emp_qs = Employee.objects.select_related('department').filter(is_active=True)
         if department_id:
             emp_qs = emp_qs.filter(department_id=department_id)
+        if employee_type:
+            emp_qs = emp_qs.filter(employee_type=employee_type)
         employees = list(emp_qs.order_by('employee_id'))
 
         # Fetch attendances for the month
         attendances = list(
             Attendance.objects
-            .filter(attendance_date__gte=start_date, attendance_date__lte=end_date)
+            .filter(
+                attendance_date__gte=start_date,
+                attendance_date__lte=end_date,
+                # Payroll-grade totals only ever include admin-approved days.
+                approval_status=Attendance.ApprovalStatus.APPROVED,
+            )
             .values(
                 'employee_id', 'attendance_date', 'status', 'attendance_type',
                 'check_in_time', 'check_out_time', 'working_duration_minutes',
-                'check_in_is_geofence_violation', 'check_out_is_geofence_violation',
                 'check_in_address', 'check_out_address', 'admin_remarks'
             )
         )
         att_map = {(att['employee_id'], att['attendance_date']): att for att in attendances}
+
+        pending_approval_count = Attendance.objects.filter(
+            attendance_date__gte=start_date,
+            attendance_date__lte=end_date,
+            approval_status=Attendance.ApprovalStatus.PENDING,
+        ).count()
+
+        # Days that exist but are NOT approved. They must be classified as
+        # "Awaiting Approval"/"Rejected" rather than falling through to
+        # ABSENT, which would misreport every unsigned day as a formal absence.
+        unapproved_map = {
+            (row['employee_id'], row['attendance_date']): row
+            for row in Attendance.objects
+            .filter(
+                attendance_date__gte=start_date,
+                attendance_date__lte=end_date,
+            )
+            .exclude(approval_status=Attendance.ApprovalStatus.APPROVED)
+            .values('employee_id', 'attendance_date', 'approval_status', 'status')
+        }
 
         # Fetch holidays in this month
         holidays_qs = Holiday.objects.filter(date__gte=start_date, date__lte=end_date)
@@ -263,8 +290,9 @@ class ReportService:
             holiday_count = 0
             weekend_count = 0
             absent_count = 0
-            geofence_count = 0
             total_minutes = 0
+            pending_count = 0
+            rejected_count = 0
 
             for d in range(1, num_days + 1):
                 cur_date = date(year, month, d)
@@ -293,10 +321,6 @@ class ReportService:
                         code = 'P'
                         label = 'Present'
 
-                    is_violation = bool(att.get('check_in_is_geofence_violation') or att.get('check_out_is_geofence_violation'))
-                    if is_violation:
-                        geofence_count += 1
-
                     emp_days.append({
                         'day': d,
                         'date': cur_date.isoformat(),
@@ -309,7 +333,6 @@ class ReportService:
                         'duration': format_duration_display(mins),
                         'duration_minutes': mins,
                         'type': a_type,
-                        'is_geofence_violation': is_violation,
                         'check_in_address': att.get('check_in_address') or "",
                         'check_out_address': att.get('check_out_address') or "",
                         'remarks': att.get('admin_remarks') or ""
@@ -329,7 +352,6 @@ class ReportService:
                         'duration': "--",
                         'duration_minutes': 0,
                         'type': "--",
-                        'is_geofence_violation': False,
                         'check_in_address': "",
                         'check_out_address': "",
                         'remarks': f"Official Holiday: {holiday_map[cur_date]}"
@@ -356,7 +378,6 @@ class ReportService:
                             'duration': "--",
                             'duration_minutes': 0,
                             'type': "--",
-                            'is_geofence_violation': False,
                             'check_in_address': "",
                             'check_out_address': "",
                             'remarks': matched_leave.get('reason') or f"Approved {leave_type_display} Leave"
@@ -375,7 +396,6 @@ class ReportService:
                             'duration': "--",
                             'duration_minutes': 0,
                             'type': "--",
-                            'is_geofence_violation': False,
                             'check_in_address': "",
                             'check_out_address': "",
                             'remarks': "Weekly Holiday"
@@ -393,10 +413,36 @@ class ReportService:
                             'duration': "--",
                             'duration_minutes': 0,
                             'type': "--",
-                            'is_geofence_violation': False,
                             'check_in_address': "",
                             'check_out_address': "",
                             'remarks': ""
+                        })
+                    elif (emp.id, cur_date) in unapproved_map:
+                        unapproved = unapproved_map[(emp.id, cur_date)]
+                        is_rejected = unapproved['approval_status'] == Attendance.ApprovalStatus.REJECTED
+                        if is_rejected:
+                            rejected_count += 1
+                        else:
+                            pending_count += 1
+                        emp_days.append({
+                            'day': d,
+                            'date': cur_date.isoformat(),
+                            'weekday': cur_date.strftime("%a"),
+                            'status': 'REJECTED' if is_rejected else 'PENDING_APPROVAL',
+                            'code': 'R' if is_rejected else 'W',
+                            'label': 'Rejected' if is_rejected else 'Awaiting Approval',
+                            'check_in': "--",
+                            'check_out': "--",
+                            'duration': "--",
+                            'duration_minutes': 0,
+                            'type': unapproved['status'],
+                            'check_in_address': "",
+                            'check_out_address': "",
+                            'remarks': (
+                                "Rejected by admin - excluded from payroll; void to allow re-punch"
+                                if is_rejected else
+                                "Awaiting admin approval - not yet counted in payroll totals"
+                            )
                         })
                     else:
                         absent_count += 1
@@ -412,7 +458,6 @@ class ReportService:
                             'duration': "--",
                             'duration_minutes': 0,
                             'type': "--",
-                            'is_geofence_violation': False,
                             'check_in_address': "",
                             'check_out_address': "",
                             'remarks': "Unexcused absence / no mobile check-in recorded"
@@ -422,7 +467,8 @@ class ReportService:
                 'employee_id': emp.employee_id,
                 'employee_name': emp.full_name,
                 'department': emp.department.name if emp.department else "--",
-                'project': emp.project.name if emp.project else "--",
+                'employee_type': emp.employee_type,
+                'employee_type_display': emp.get_employee_type_display(),
                 'designation': emp.designation,
                 'present_days': present_count,
                 'late_days': late_count,
@@ -430,8 +476,9 @@ class ReportService:
                 'holiday_days': holiday_count,
                 'weekend_days': weekend_count,
                 'absent_days': absent_count,
+                'pending_approval_days': pending_count,
+                'rejected_days': rejected_count,
                 'manual_days': manual_count,
-                'geofence_violations': geofence_count,
                 'total_working_hours': format_duration_display(total_minutes),
                 'total_working_minutes': total_minutes,
                 'days': emp_days
@@ -444,17 +491,24 @@ class ReportService:
             'days_metadata': days_metadata,
             'total_holidays': len(holiday_map),
             'total_employees': len(employees),
+            'pending_approval_days': pending_approval_count,
             'records': records
         }
 
     @staticmethod
-    def get_employee_report(employee_id_or_pk, start_date=None, end_date=None):
+    def get_employee_report(employee_id_or_pk, start_date=None, end_date=None, employee_type=None):
         if isinstance(employee_id_or_pk, int) or str(employee_id_or_pk).isdigit():
-            emp = Employee.objects.select_related('department', 'project', 'user').filter(id=int(employee_id_or_pk)).first()
+            emp = Employee.objects.select_related('department', 'user').filter(id=int(employee_id_or_pk)).first()
         else:
-            emp = Employee.objects.select_related('department', 'project', 'user').filter(employee_id=employee_id_or_pk).first()
+            emp = Employee.objects.select_related('department', 'user').filter(employee_id=employee_id_or_pk).first()
 
         if not emp:
+            return None
+
+        # Employee-type scoping guard: an employee outside the requested type is
+        # treated as "not found" so a type-filtered report can never expose
+        # another group's dossier.
+        if employee_type and str(emp.employee_type or '') != str(employee_type):
             return None
 
         today = get_dhaka_date()
@@ -468,51 +522,190 @@ class ReportService:
         elif isinstance(end_date, str):
             end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
 
+        # Official holidays and approved leaves covering the window
+        holiday_map = {
+            h.date: h.name
+            for h in Holiday.objects.filter(date__gte=start_date, date__lte=end_date)
+        }
+        approved_leaves = list(
+            LeaveRequest.objects
+            .filter(
+                employee=emp,
+                status=LeaveRequest.Status.APPROVED,
+                start_date__lte=end_date,
+                end_date__gte=start_date,
+            )
+            .values('leave_type', 'start_date', 'end_date', 'reason')
+        )
+
         attendances = (
             Attendance.objects
             .select_related('approved_by')
             .filter(employee=emp, attendance_date__gte=start_date, attendance_date__lte=end_date)
-            .order_by('-attendance_date')
         )
+        att_by_date = {att.attendance_date: att for att in attendances}
 
         daily_records = []
         present_count = 0
         late_count = 0
         manual_count = 0
         total_minutes = 0
+        pending_approval_count = 0
+        rejected_count = 0
+        leave_count = 0
+        holiday_count = 0
+        weekend_count = 0
+        future_count = 0
+        absent_count = 0
 
-        for att in attendances:
-            if att.status == Attendance.Status.PRESENT:
-                present_count += 1
-            elif att.status == Attendance.Status.LATE:
-                late_count += 1
+        num_days = (end_date - start_date).days + 1
+        # Emit a row for EVERY calendar day of the window so the dossier shows
+        # exactly which days were business absences, leave, holidays or weekends
+        # instead of silently omitting them (and mislabelling holidays/off-days
+        # as absences in the aggregate).
+        for offset in range(num_days):
+            cur_date = start_date + timedelta(days=offset)
+            att = att_by_date.get(cur_date)
 
-            if att.attendance_type == Attendance.Type.MANUAL:
-                manual_count += 1
+            if att:
+                is_approved = att.approval_status == Attendance.ApprovalStatus.APPROVED
+                if not is_approved:
+                    if att.approval_status == Attendance.ApprovalStatus.PENDING:
+                        pending_approval_count += 1
+                    else:
+                        rejected_count += 1
+                    # Still listed for the reviewer's benefit, but contributes
+                    # nothing to the payroll-grade totals below.
+                    if att.approval_status == Attendance.ApprovalStatus.REJECTED:
+                        status_name = 'REJECTED'
+                        remarks_text = 'Rejected by admin - excluded from payroll'
+                    else:
+                        status_name = 'PENDING_APPROVAL'
+                        remarks_text = 'Awaiting admin approval - not yet counted'
+                    daily_records.append({
+                        'date': str(cur_date),
+                        'check_in': format_time_display(att.check_in_time),
+                        'check_out': format_time_display(att.check_out_time) if att.check_out_time else "--",
+                        'duration': '--',
+                        'duration_minutes': 0,
+                        'type': att.attendance_type,
+                        'status': status_name,
+                        'approval_status': att.approval_status,
+                        'approved_by': att.approved_by.username if att.approved_by else "--",
+                        'check_in_latitude': float(att.check_in_latitude) if att.check_in_latitude is not None else None,
+                        'check_in_longitude': float(att.check_in_longitude) if att.check_in_longitude is not None else None,
+                        'check_in_address': att.check_in_address or "",
+                        'check_out_latitude': float(att.check_out_latitude) if att.check_out_latitude is not None else None,
+                        'check_out_longitude': float(att.check_out_longitude) if att.check_out_longitude is not None else None,
+                        'check_out_address': att.check_out_address or "",
+                        'remarks': att.admin_remarks or remarks_text,
+                    })
+                    continue
 
-            mins = att.working_duration_minutes or 0
-            total_minutes += mins
+                if att.status == Attendance.Status.PRESENT:
+                    present_count += 1
+                elif att.status == Attendance.Status.LATE:
+                    late_count += 1
 
-            daily_records.append({
-                'date': str(att.attendance_date),
-                'check_in': format_time_display(att.check_in_time),
-                'check_out': format_time_display(att.check_out_time) if att.check_out_time else "--",
-                'duration': format_duration_display(att.working_duration_minutes),
-                'type': att.attendance_type,
-                'status': att.status,
-                'approved_by': att.approved_by.username if att.approved_by else "--",
-                'remarks': att.admin_remarks or "",
-                'check_in_latitude': float(att.check_in_latitude) if att.check_in_latitude is not None else None,
-                'check_in_longitude': float(att.check_in_longitude) if att.check_in_longitude is not None else None,
-                'check_in_address': att.check_in_address or "",
-                'check_out_latitude': float(att.check_out_latitude) if att.check_out_latitude is not None else None,
-                'check_out_longitude': float(att.check_out_longitude) if att.check_out_longitude is not None else None,
-                'check_out_address': att.check_out_address or "",
-            })
+                if att.attendance_type == Attendance.Type.MANUAL:
+                    manual_count += 1
 
-        total_days = (end_date - start_date).days + 1
-        attended_days = len(daily_records)
-        absent_days = max(0, total_days - attended_days)
+                mins = att.working_duration_minutes or 0
+                total_minutes += mins
+
+                daily_records.append({
+                    'date': str(cur_date),
+                    'check_in': format_time_display(att.check_in_time),
+                    'check_out': format_time_display(att.check_out_time) if att.check_out_time else "--",
+                    'duration': format_duration_display(att.working_duration_minutes),
+                    'type': att.attendance_type,
+                    'status': att.status,
+                    'approval_status': att.approval_status,
+                    'approved_by': att.approved_by.username if att.approved_by else "--",
+                    'remarks': att.admin_remarks or "",
+                    'check_in_latitude': float(att.check_in_latitude) if att.check_in_latitude is not None else None,
+                    'check_in_longitude': float(att.check_in_longitude) if att.check_in_longitude is not None else None,
+                    'check_in_address': att.check_in_address or "",
+                    'check_out_latitude': float(att.check_out_latitude) if att.check_out_latitude is not None else None,
+                    'check_out_longitude': float(att.check_out_longitude) if att.check_out_longitude is not None else None,
+                    'check_out_address': att.check_out_address or "",
+                })
+            elif cur_date in holiday_map:
+                holiday_count += 1
+                daily_records.append({
+                    'date': str(cur_date),
+                    'check_in': "--",
+                    'check_out': "--",
+                    'duration': "--",
+                    'duration_minutes': 0,
+                    'type': "--",
+                    'status': 'HOLIDAY',
+                    'approval_status': None,
+                    'approved_by': "--",
+                    'remarks': f"Official Holiday: {holiday_map[cur_date]}",
+                })
+            else:
+                matched_leave = next(
+                    (l for l in approved_leaves if l['start_date'] <= cur_date <= l['end_date']),
+                    None
+                )
+                if matched_leave:
+                    leave_count += 1
+                    leave_type_display = matched_leave['leave_type'].replace('_', ' ').title()
+                    daily_records.append({
+                        'date': str(cur_date),
+                        'check_in': "--",
+                        'check_out': "--",
+                        'duration': "--",
+                        'duration_minutes': 0,
+                        'type': "--",
+                        'status': 'ON_LEAVE',
+                        'approval_status': None,
+                        'approved_by': "--",
+                        'remarks': matched_leave.get('reason') or f"Approved {leave_type_display} Leave",
+                    })
+                elif cur_date.weekday() == 4:  # Friday = weekly off (Asia/Dhaka)
+                    weekend_count += 1
+                    daily_records.append({
+                        'date': str(cur_date),
+                        'check_in': "--",
+                        'check_out': "--",
+                        'duration': "--",
+                        'duration_minutes': 0,
+                        'type': "--",
+                        'status': 'WEEKEND',
+                        'approval_status': None,
+                        'approved_by': "--",
+                        'remarks': "Weekly Holiday (Friday)",
+                    })
+                elif cur_date > today:
+                    future_count += 1
+                    daily_records.append({
+                        'date': str(cur_date),
+                        'check_in': "--",
+                        'check_out': "--",
+                        'duration': "--",
+                        'duration_minutes': 0,
+                        'type': "--",
+                        'status': 'FUTURE',
+                        'approval_status': None,
+                        'approved_by': "--",
+                        'remarks': "Upcoming date",
+                    })
+                else:
+                    absent_count += 1
+                    daily_records.append({
+                        'date': str(cur_date),
+                        'check_in': "--",
+                        'check_out': "--",
+                        'duration': "--",
+                        'duration_minutes': 0,
+                        'type': "--",
+                        'status': 'ABSENT',
+                        'approval_status': None,
+                        'approved_by': "--",
+                        'remarks': "Unexcused absence / no mobile check-in recorded",
+                    })
 
         return {
             'employee': {
@@ -522,7 +715,8 @@ class ReportService:
                 'phone': emp.phone,
                 'email': emp.user.email,
                 'department': emp.department.name if emp.department else "--",
-                'project': emp.project.name if emp.project else "--",
+                'employee_type': emp.employee_type,
+                'employee_type_display': emp.get_employee_type_display(),
                 'designation': emp.designation,
                 'joining_date': str(emp.joining_date),
                 'is_active': emp.is_active
@@ -530,11 +724,17 @@ class ReportService:
             'summary': {
                 'start_date': str(start_date),
                 'end_date': str(end_date),
-                'total_days_range': total_days,
+                'total_days_range': num_days,
                 'present_days': present_count,
                 'late_days': late_count,
-                'absent_days': absent_days,
+                'absent_days': absent_count,
+                'leave_days': leave_count,
+                'holiday_days': holiday_count,
+                'weekend_days': weekend_count,
+                'future_days': future_count,
                 'manual_days': manual_count,
+                'pending_approval_days': pending_approval_count,
+                'rejected_days': rejected_count,
                 'total_working_hours': format_duration_display(total_minutes),
                 'total_working_minutes': total_minutes
             },

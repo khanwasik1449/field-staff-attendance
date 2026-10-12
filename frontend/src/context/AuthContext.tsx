@@ -11,6 +11,7 @@ interface AuthContextType {
   isAdmin: boolean;
   isFieldAssistant: boolean;
   login: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  faLogin: (employeeId: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   refreshMe: () => Promise<void>;
   loading: boolean;
@@ -66,7 +67,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = async (username: string, password: string) => {
     try {
       const res = await apiClient.post('/auth/login/', { username, password });
-      const { access, refresh, user: userData, employee: empData } = res.data;
+      const { access, refresh, user: userData, employee: empData, settings: settingsData } = res.data;
 
       localStorage.setItem('fams_access_token', access);
       localStorage.setItem('fams_refresh_token', refresh);
@@ -77,10 +78,44 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       setUser(userData);
       setEmployee(empData);
-      // Hydrate the server-authoritative settings (GPS flags, shift rules) before
-      // the assistant lands on the punch screen, so the first check-in already
-      // knows whether location capture is required.
-      await refreshMe();
+      // Login already returns the server-authoritative settings (GPS flags, shift
+      // rules), so hydrate them straight from the response. This deliberately avoids
+      // a second /auth/me/ round-trip, which is the only avoidable latency between
+      // submitting credentials and landing on the punch screen.
+      if (settingsData) {
+        setSettings(settingsData);
+      } else {
+        await refreshMe();
+      }
+      setLoading(false);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: extractErrorMessage(err) };
+    }
+  };
+
+  // Field Assistant login: requires Employee ID + password so the server can verify
+  // the credential before minting tokens.
+  const faLogin = async (employeeId: string, password: string) => {
+    try {
+      const res = await apiClient.post('/auth/fa-login/', { employee_id: employeeId, password });
+      const { access, refresh, user: userData, employee: empData, settings: settingsData } = res.data;
+
+      localStorage.setItem('fams_access_token', access);
+      localStorage.setItem('fams_refresh_token', refresh);
+      localStorage.setItem('fams_user', JSON.stringify(userData));
+      if (empData) {
+        localStorage.setItem('fams_employee', JSON.stringify(empData));
+      }
+
+      setUser(userData);
+      setEmployee(empData);
+      if (settingsData) {
+        setSettings(settingsData);
+      } else {
+        await refreshMe();
+      }
+      setLoading(false);
       return { success: true };
     } catch (err) {
       return { success: false, error: extractErrorMessage(err) };
@@ -113,6 +148,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isAdmin,
         isFieldAssistant,
         login,
+        faLogin,
         logout,
         refreshMe,
         loading,

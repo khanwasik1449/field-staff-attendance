@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from .models import User, Department, Project, Employee
+from .models import User, Department, Employee, EmployeeType
 
 @admin.register(User)
 class UserAdmin(BaseUserAdmin):
@@ -19,17 +19,18 @@ class DepartmentAdmin(admin.ModelAdmin):
     search_fields = ('name', 'code')
     list_filter = ('is_active',)
 
-@admin.register(Project)
-class ProjectAdmin(admin.ModelAdmin):
-    list_display = ('name', 'code', 'district', 'upazila', 'division', 'is_active', 'created_at')
-    search_fields = ('name', 'code', 'district', 'upazila')
-    list_filter = ('division', 'is_active')
+
+@admin.register(EmployeeType)
+class EmployeeTypeAdmin(admin.ModelAdmin):
+    list_display = ('code', 'name', 'is_active', 'created_at')
+    search_fields = ('code', 'name')
+    list_filter = ('is_active',)
 
 @admin.register(Employee)
 class EmployeeAdmin(admin.ModelAdmin):
-    list_display = ('employee_id', 'full_name', 'phone', 'project', 'department', 'district', 'is_active')
-    search_fields = ('employee_id', 'full_name', 'phone', 'district', 'user__username')
-    list_filter = ('is_active', 'department', 'project', 'division')
+    list_display = ('employee_id', 'full_name', 'phone', 'employee_type', 'department', 'is_active')
+    search_fields = ('employee_id', 'full_name', 'phone', 'user__username')
+    list_filter = ('is_active', 'employee_type', 'department')
     actions = ['activate_employees', 'deactivate_employees']
 
     @admin.action(description="Reactivate selected employees")

@@ -1,3 +1,5 @@
+from datetime import date
+
 from rest_framework import serializers
 from .models import (
     Attendance, AttendanceSetting, EmployeeSchedule, ISO_WEEKDAYS, parse_work_days
@@ -14,7 +16,7 @@ class AttendanceSettingSerializer(serializers.ModelSerializer):
             'work_days', 'work_days_display',
             'late_grace_minutes', 'half_day_minimum_minutes',
             'full_day_minimum_minutes', 'timezone',
-            'require_gps', 'enforce_geofence',
+            'require_gps',
             'is_active', 'updated_at'
         ]
         read_only_fields = ['id', 'updated_at']
@@ -50,34 +52,35 @@ class AttendanceSerializer(serializers.ModelSerializer):
     employee_id = serializers.CharField(source='employee.employee_id', read_only=True)
     employee_name = serializers.CharField(source='employee.full_name', read_only=True)
     department_name = serializers.CharField(source='employee.department.name', read_only=True, default='')
-    project_name = serializers.CharField(source='employee.project.name', read_only=True, default='')
-    employee_division = serializers.CharField(source='employee.division', read_only=True, default='')
-    employee_district = serializers.CharField(source='employee.district', read_only=True, default='')
-    employee_upazila = serializers.CharField(source='employee.upazila', read_only=True, default='')
+    employee_type = serializers.CharField(source='employee.employee_type', read_only=True, default='')
+    employee_type_display = serializers.CharField(source='employee.get_employee_type_display', read_only=True, default='')
     check_in_display = serializers.SerializerMethodField()
     check_out_display = serializers.SerializerMethodField()
     working_duration_display = serializers.SerializerMethodField()
     approved_by_username = serializers.CharField(source='approved_by.username', read_only=True, default='')
+    approval_status_display = serializers.SerializerMethodField()
 
     class Meta:
         model = Attendance
         fields = [
-            'id', 'employee', 'employee_id', 'employee_name', 'department_name', 'project_name',
-            'employee_division', 'employee_district', 'employee_upazila',
+            'id', 'employee', 'employee_id', 'employee_name', 'department_name',
+            'employee_type', 'employee_type_display',
             'attendance_date', 'check_in_time', 'check_out_time',
             'check_in_display', 'check_out_display',
             'working_duration_minutes', 'working_duration_display',
             'attendance_type', 'status',
             'check_in_latitude', 'check_in_longitude', 'check_in_accuracy',
-            'check_in_distance_meters', 'check_in_is_geofence_violation',
             'check_in_address',
             'check_out_latitude', 'check_out_longitude', 'check_out_accuracy',
-            'check_out_distance_meters', 'check_out_is_geofence_violation',
             'check_out_address',
+            'approval_status', 'approval_status_display',
             'approved_by', 'approved_by_username', 'approved_at', 'admin_remarks',
             'manual_request', 'created_at', 'updated_at'
         ]
         read_only_fields = fields
+
+    def get_approval_status_display(self, obj):
+        return obj.get_approval_status_display()
 
     def get_check_in_display(self, obj):
         return format_time_display(obj.check_in_time)
@@ -118,4 +121,24 @@ class EmployeeScheduleBulkSerializer(serializers.Serializer):
         seen = [row['weekday'] for row in value]
         if len(seen) != len(set(seen)):
             raise serializers.ValidationError('Each weekday may appear only once.')
+        return value
+
+
+class BulkApproveSerializer(serializers.Serializer):
+    """
+    Write payload for approving every pending duty day on one date.
+    Narrowing to `employee_ids` lets an admin approve a subset.
+    """
+    date = serializers.DateField()
+    admin_remarks = serializers.CharField(
+        required=False, allow_blank=True, default='', max_length=2000
+    )
+    employee_ids = serializers.ListField(
+        child=serializers.CharField(max_length=32),
+        required=False, allow_empty=True, default=list,
+    )
+
+    def validate_date(self, value):
+        if value > date.today():
+            raise serializers.ValidationError('Cannot approve attendance for a future date.')
         return value

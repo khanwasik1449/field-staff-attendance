@@ -1,16 +1,21 @@
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 from datetime import date, timedelta
-from apps.accounts.models import User, Department, Project, Employee
+from apps.accounts.models import User, Department, Employee, EmployeeType
 from apps.attendance.models import AttendanceSetting, Attendance
 from apps.requests.models import ManualAttendanceRequest
 from apps.attendance.services import get_dhaka_datetime
 
 class Command(BaseCommand):
-    help = "Seed initial data for FAMS including admin, departments, projects, and field assistants."
+    help = "Seed initial data for FAMS including admin, departments, employee types, and field assistants."
 
     def handle(self, *args, **options):
         self.stdout.write("Seeding FAMS initial data...")
+
+        # 0. Employee Type catalog (admins manage this list going forward).
+        for code, name in (('FIELD_STAFF', 'Field Staff'), ('INTERN', 'Intern')):
+            EmployeeType.objects.get_or_create(code=code, defaults={'name': name})
+        self.stdout.write("✓ Employee types initialized (Field Staff, Intern).")
 
         # 1. Company Settings
         setting, _ = AttendanceSetting.objects.get_or_create(
@@ -32,10 +37,6 @@ class Command(BaseCommand):
         dept_res, _ = Department.objects.get_or_create(name="Survey & Research", defaults={'code': 'RES'})
         dept_log, _ = Department.objects.get_or_create(name="Logistics & Delivery", defaults={'code': 'LOG'})
 
-        # 3. Projects
-        proj_dhaka, _ = Project.objects.get_or_create(name="Dhaka Urban Survey", defaults={'code': 'DHK-01', 'description': 'Urban census and verification'})
-        proj_ctg, _ = Project.objects.get_or_create(name="Chittagong Coastal Mapping", defaults={'code': 'CTG-01', 'description': 'Port and coastal logistical assessment'})
-
         # 4. Admin User
         admin_user, created = User.objects.get_or_create(
             username='admin',
@@ -55,46 +56,46 @@ class Command(BaseCommand):
         assistants_data = [
             {
                 'username': 'fa001',
-                'password': 'password123',
+                'password': 'Fams@123',
                 'email': 'rahim.ahmed@fams.org',
                 'employee_id': 'FA-001',
                 'full_name': 'Rahim Ahmed',
                 'phone': '+8801711001122',
                 'department': dept_ops,
-                'project': proj_dhaka,
+                'employee_type': 'FIELD_STAFF',
                 'designation': 'Senior Field Assistant',
             },
             {
                 'username': 'fa002',
-                'password': 'password123',
+                'password': 'Fams@123',
                 'email': 'fatima.begum@fams.org',
                 'employee_id': 'FA-002',
                 'full_name': 'Fatima Begum',
                 'phone': '+8801811334455',
                 'department': dept_res,
-                'project': proj_dhaka,
+                'employee_type': 'FIELD_STAFF',
                 'designation': 'Field Enumerator',
             },
             {
                 'username': 'fa003',
-                'password': 'password123',
+                'password': 'Fams@123',
                 'email': 'tariqul.islam@fams.org',
                 'employee_id': 'FA-003',
                 'full_name': 'Tariqul Islam',
                 'phone': '+8801911556677',
                 'department': dept_log,
-                'project': proj_ctg,
+                'employee_type': 'FIELD_STAFF',
                 'designation': 'Field Logistics Assistant',
             },
             {
                 'username': 'fa004',
-                'password': 'password123',
+                'password': 'Fams@123',
                 'email': 'nasreen.akter@fams.org',
                 'employee_id': 'FA-004',
                 'full_name': 'Nasreen Akter',
                 'phone': '+8801611778899',
                 'department': dept_ops,
-                'project': proj_ctg,
+                'employee_type': 'INTERN',
                 'designation': 'Junior Field Assistant',
             }
         ]
@@ -121,7 +122,7 @@ class Command(BaseCommand):
                     'full_name': d['full_name'],
                     'phone': d['phone'],
                     'department': d['department'],
-                    'project': d['project'],
+                    'employee_type': d['employee_type'],
                     'designation': d['designation'],
                     'joining_date': date(2025, 1, 15),
                     'is_active': True,

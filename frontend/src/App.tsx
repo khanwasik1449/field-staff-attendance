@@ -17,8 +17,10 @@ import { AdminDailyReport } from './pages/admin/AdminDailyReport';
 import { AdminMonthlyReport } from './pages/admin/AdminMonthlyReport';
 import { AdminEmployeeReport } from './pages/admin/AdminEmployeeReport';
 import { AdminManualRequests } from './pages/admin/AdminManualRequests';
+import { AdminAttendanceApprovals } from './pages/admin/AdminAttendanceApprovals';
 import { AdminLeaves } from './pages/admin/AdminLeaves';
 import { AdminEmployees } from './pages/admin/AdminEmployees';
+import { AdminEmployeeTypes } from './pages/admin/AdminEmployeeTypes';
 import { AdminAuditLogs } from './pages/admin/AdminAuditLogs';
 import { AdminSettings } from './pages/admin/AdminSettings';
 
@@ -170,6 +172,14 @@ export function App() {
             }
           />
           <Route
+            path="/admin/attendance-approvals"
+            element={
+              <ProtectedRoute allowedRole="ADMIN">
+                <AdminAttendanceApprovals />
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/admin/manual-requests"
             element={
               <ProtectedRoute allowedRole="ADMIN">
@@ -186,18 +196,10 @@ export function App() {
             }
           />
           <Route
-            path="/admin/projects"
-            element={
-              <ProtectedRoute allowedRole="ADMIN">
-                <AdminEmployees initialTab="locations" />
-              </ProtectedRoute>
-            }
-          />
-          <Route
             path="/admin/accounts"
             element={
               <ProtectedRoute allowedRole="ADMIN">
-                <AdminEmployees initialTab="assistants" />
+                <AdminEmployees />
               </ProtectedRoute>
             }
           />
@@ -205,7 +207,15 @@ export function App() {
             path="/admin/employees"
             element={
               <ProtectedRoute allowedRole="ADMIN">
-                <AdminEmployees initialTab="assistants" />
+                <AdminEmployees />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/employee-types"
+            element={
+              <ProtectedRoute allowedRole="ADMIN">
+                <AdminEmployeeTypes />
               </ProtectedRoute>
             }
           />

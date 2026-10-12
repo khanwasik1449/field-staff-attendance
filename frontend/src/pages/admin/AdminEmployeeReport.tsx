@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { apiClient, extractErrorMessage } from '../../lib/api';
+import { useEmployeeTypes } from '../../hooks/useEmployeeTypes';
 import { Employee } from '../../types';
 import { StatusBadge } from '../../components/StatusBadge';
 import {
@@ -31,7 +32,13 @@ interface EmployeeReportData {
     present_days: number;
     late_days: number;
     absent_days: number;
+    leave_days?: number;
+    holiday_days?: number;
+    weekend_days?: number;
+    future_days?: number;
     manual_days: number;
+    pending_approval_days?: number;
+    rejected_days?: number;
     total_working_hours: string;
     total_working_minutes: number;
   };
@@ -54,28 +61,102 @@ interface EmployeeReportData {
   }[];
 }
 
+type PeriodMode = 'thisMonth' | 'lastMonth' | 'custom';
+
+const toISODate = (d: Date): string => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+// Full calendar-month bounds, offset 0 = current month, -1 = previous month.
+const monthBounds = (offset: number): { start: string; end: string } => {
+  const now = new Date();
+  const first = new Date(now.getFullYear(), now.getMonth() + offset, 1);
+  const last = new Date(now.getFullYear(), now.getMonth() + offset + 1, 0);
+  return { start: toISODate(first), end: toISODate(last) };
+};
+
+// Latest end date allowed for a given start so the window never exceeds 1 month.
+const maxEndFor = (startIso: string): string => {
+  const d = new Date(startIso + 'T00:00:00');
+  const targetM = d.getMonth() + 1;
+  const lastDayOfTarget = new Date(d.getFullYear(), targetM + 1, 0).getDate();
+  const end = new Date(d.getFullYear(), targetM, Math.min(d.getDate(), lastDayOfTarget));
+  end.setDate(end.getDate() - 1);
+  return toISODate(end);
+};
+
 export const AdminEmployeeReport: React.FC = () => {
+  const initialMonth = monthBounds(0);
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const { activeTypes: activeEmployeeTypes } = useEmployeeTypes();
   const [selectedEmpId, setSelectedEmpId] = useState<string>('');
-  const [startDate, setStartDate] = useState(() => {
-    const d = new Date();
-    return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().split('T')[0];
-  });
-  const [endDate, setEndDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [employeeTypeFilter, setEmployeeTypeFilter] = useState('');
+  const [periodMode, setPeriodMode] = useState<PeriodMode>('thisMonth');
+  const [startDate, setStartDate] = useState(initialMonth.start);
+  const [endDate, setEndDate] = useState(initialMonth.end);
   const [report, setReport] = useState<EmployeeReportData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const applyPeriod = (mode: PeriodMode) => {
+    setPeriodMode(mode);
+    if (mode === 'thisMonth') {
+      const b = monthBounds(0);
+      setStartDate(b.start);
+      setEndDate(b.end);
+    } else if (mode === 'lastMonth') {
+      const b = monthBounds(-1);
+      setStartDate(b.start);
+      setEndDate(b.end);
+    }
+  };
+
+  // Custom-range handlers keep the window within a single month.
+  const handleStartChange = (value: string) => {
+    setPeriodMode('custom');
+    setStartDate(value);
+    if (endDate < value) {
+      setEndDate(value);
+    } else if (endDate > maxEndFor(value)) {
+      setEndDate(maxEndFor(value));
+    }
+  };
+
+  const handleEndChange = (value: string) => {
+    setPeriodMode('custom');
+    if (value < startDate) {
+      setEndDate(startDate);
+    } else if (value > maxEndFor(startDate)) {
+      setEndDate(maxEndFor(startDate));
+    } else {
+      setEndDate(value);
+    }
+  };
+
   // Load employee list for dropdown
   useEffect(() => {
     apiClient.get('/auth/employees/').then((res) => {
-      const list = res.data.results || res.data;
-      setEmployees(list);
-      if (list.length > 0) {
-        setSelectedEmpId(list[0].employee_id);
-      }
+      setEmployees(res.data.results || res.data);
     });
   }, []);
+
+  // Employees under the selected employee type only
+  const filteredEmployees = useMemo(() => {
+    if (!employeeTypeFilter) return employees;
+    return employees.filter((e) => e.employee_type === employeeTypeFilter);
+  }, [employees, employeeTypeFilter]);
+
+  // Auto-select the first employee of the chosen employee type
+  useEffect(() => {
+    if (filteredEmployees.length === 0) {
+      setSelectedEmpId('');
+    } else if (!filteredEmployees.some((e) => e.employee_id === selectedEmpId)) {
+      setSelectedEmpId(filteredEmployees[0].employee_id);
+    }
+  }, [filteredEmployees, selectedEmpId]);
 
   const fetchReport = async () => {
     if (!selectedEmpId) return;
@@ -83,7 +164,7 @@ export const AdminEmployeeReport: React.FC = () => {
     setError(null);
     try {
       const res = await apiClient.get<EmployeeReportData>(`/admin/reports/employee/${selectedEmpId}/`, {
-        params: { start_date: startDate, end_date: endDate }
+        params: { start_date: startDate, end_date: endDate, employee_type: employeeTypeFilter || undefined }
       });
       setReport(res.data);
     } catch (err) {
@@ -97,7 +178,7 @@ export const AdminEmployeeReport: React.FC = () => {
     if (selectedEmpId) {
       fetchReport();
     }
-  }, [selectedEmpId, startDate, endDate]);
+  }, [selectedEmpId, startDate, endDate, employeeTypeFilter]);
 
   const handleExport = (format: 'csv' | 'xlsx') => {
     if (!selectedEmpId) return;
@@ -105,6 +186,7 @@ export const AdminEmployeeReport: React.FC = () => {
       start_date: startDate,
       end_date: endDate,
       format,
+      ...(employeeTypeFilter && { employee_type: employeeTypeFilter }),
     });
 
     apiClient.get(`/admin/reports/employee/${selectedEmpId}/export/?${params.toString()}`, {
@@ -137,9 +219,10 @@ export const AdminEmployeeReport: React.FC = () => {
 
   const punctualityScore = useMemo(() => {
     if (!report) return 0;
-    const totalDays = report.summary.total_days_range || 1;
-    const effectiveDays = report.summary.present_days;
-    return Math.round((effectiveDays / totalDays) * 100);
+    const { total_days_range, weekend_days = 0, holiday_days = 0, future_days = 0 } = report.summary;
+    const workingDays = Math.max(1, total_days_range - weekend_days - holiday_days - future_days);
+    const attended = report.summary.present_days + report.summary.late_days;
+    return Math.round((attended / workingDays) * 100);
   }, [report]);
 
   return (
@@ -213,7 +296,26 @@ export const AdminEmployeeReport: React.FC = () => {
       </div>
 
       {/* Selector & Date Range Toolbar (Hidden during Print) */}
-      <div className="no-print bg-white p-4 rounded-2xl border border-slate-200 shadow-xs grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <div className="no-print bg-white p-4 rounded-2xl border border-slate-200 shadow-xs grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <div>
+          <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+            Filter by Employee Type
+          </label>
+          <div className="relative">
+            <Briefcase className="w-4 h-4 text-slate-400 absolute left-3 top-2.5 pointer-events-none" />
+            <select
+              value={employeeTypeFilter}
+              onChange={(e) => setEmployeeTypeFilter(e.target.value)}
+              className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm font-bold text-slate-900 focus:ring-2 focus:ring-cyan-500 focus:outline-none"
+            >
+              <option value="">All Employee Types</option>
+              {activeEmployeeTypes.map((t) => (
+                <option key={t.code} value={t.code}>{t.name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
         <div>
           <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
             Select Field Assistant
@@ -223,7 +325,8 @@ export const AdminEmployeeReport: React.FC = () => {
             onChange={(e) => setSelectedEmpId(e.target.value)}
             className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm font-bold text-slate-900 focus:ring-2 focus:ring-cyan-500 focus:outline-none"
           >
-            {employees.map((e) => (
+            {employeeTypeFilter && <option value="">All employees of selected type</option>}
+            {filteredEmployees.map((e) => (
               <option key={e.id} value={e.employee_id}>
                 {e.employee_id} - {e.full_name} ({e.designation || 'Field Assistant'})
               </option>
@@ -233,13 +336,37 @@ export const AdminEmployeeReport: React.FC = () => {
 
         <div>
           <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+            Reporting Period (মাস/সীমা)
+          </label>
+          <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-slate-100 border border-slate-200">
+            {(['thisMonth', 'lastMonth', 'custom'] as PeriodMode[]).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => applyPeriod(mode)}
+                className={`px-2 py-1.5 rounded-lg text-[11px] font-bold transition-colors ${
+                  periodMode === mode
+                    ? 'bg-cyan-600 text-white shadow-sm'
+                    : 'text-slate-600 hover:bg-white'
+                }`}
+              >
+                {mode === 'thisMonth' ? 'This Month' : mode === 'lastMonth' ? 'Last Month' : 'Custom'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
             From Date (শুরুর তারিখ)
           </label>
           <input
             type="date"
             value={startDate}
-            onChange={(e) => setStartDate(e.target.value)}
-            className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm font-semibold text-slate-900 focus:ring-2 focus:ring-cyan-500 focus:outline-none"
+            max={endDate}
+            disabled={periodMode !== 'custom'}
+            onChange={(e) => handleStartChange(e.target.value)}
+            className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm font-semibold text-slate-900 focus:ring-2 focus:ring-cyan-500 focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </div>
 
@@ -250,9 +377,19 @@ export const AdminEmployeeReport: React.FC = () => {
           <input
             type="date"
             value={endDate}
-            onChange={(e) => setEndDate(e.target.value)}
-            className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm font-semibold text-slate-900 focus:ring-2 focus:ring-cyan-500 focus:outline-none"
+            min={startDate}
+            max={maxEndFor(startDate)}
+            disabled={periodMode !== 'custom'}
+            onChange={(e) => handleEndChange(e.target.value)}
+            className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-sm font-semibold text-slate-900 focus:ring-2 focus:ring-cyan-500 focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed"
           />
+        </div>
+
+        <div className="flex items-end">
+          <p className="text-[11px] font-medium text-slate-500 leading-snug">
+            Select a whole month with <span className="font-bold text-slate-700">This Month</span> / <span className="font-bold text-slate-700">Last Month</span>,
+            or pick a custom range of <span className="font-bold text-rose-600">at most 1 month</span>.
+          </p>
         </div>
       </div>
 
@@ -340,12 +477,10 @@ export const AdminEmployeeReport: React.FC = () => {
                   <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
                   <span className="font-semibold">{report.employee.is_active ? 'Active Profile' : 'Deactivated'}</span>
                 </div>
-                {report.employee.project_name && (
-                  <div className="col-span-2 flex items-center gap-1.5 pt-1 text-[11px] font-bold text-slate-800">
-                    <Building2 className="w-3.5 h-3.5 text-blue-600 shrink-0" />
-                    <span>Assigned Project: {report.employee.project_name}</span>
-                  </div>
-                )}
+                <div className="col-span-2 flex items-center gap-1.5 pt-1 text-[11px] font-bold text-slate-800">
+                  <Building2 className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                  <span>Employee Type: {report.employee.employee_type_display || report.employee.employee_type}</span>
+                </div>
               </div>
             </div>
 
@@ -379,8 +514,21 @@ export const AdminEmployeeReport: React.FC = () => {
           </div>
 
           {/* Chronological Daily Records Table */}
-          <div className="overflow-x-auto print:overflow-visible">
-            <table className="min-w-full divide-y divide-slate-200 text-left border border-slate-200 print:text-[10px]">
+          <div>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 pb-2 text-[10px] font-bold text-slate-600">
+              <span className="uppercase text-slate-400 tracking-wider">Day Register:</span>
+              <span className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-emerald-100 border border-emerald-300"></span>Present</span>
+              <span className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-amber-100 border border-amber-300"></span>Late</span>
+              <span className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-blue-100 border border-blue-300"></span>Manual</span>
+              <span className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-violet-100 border border-violet-300"></span>Leave</span>
+              <span className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-sky-100 border border-sky-300"></span>Holiday</span>
+              <span className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-slate-100 border border-slate-300"></span>Weekend</span>
+              <span className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-rose-100 border border-rose-300"></span>Absent</span>
+              <span className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-blue-100 border border-blue-300"></span>Pending</span>
+              <span className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-red-100 border border-red-300"></span>Rejected</span>
+            </div>
+            <div className="overflow-x-auto print:overflow-visible">
+              <table className="min-w-full divide-y divide-slate-200 text-left border border-slate-200 print:text-[10px]">
               <thead className="bg-slate-900 text-white text-[11px] font-bold uppercase tracking-wider print:bg-slate-100 print:text-black">
                 <tr>
                   <th className="py-2.5 px-3 text-center w-12">#</th>
@@ -486,6 +634,7 @@ export const AdminEmployeeReport: React.FC = () => {
                 })}
               </tbody>
             </table>
+            </div>
           </div>
 
           {/* ========================================================= */}

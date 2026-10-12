@@ -1,21 +1,24 @@
 from rest_framework import generics, status, viewsets
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.shortcuts import get_object_or_404
-from django.db.models import Q
+from django.db.models import Q, Count, F, OuterRef, Subquery, IntegerField
+from django.db.models.functions import Coalesce
 from django.http import HttpResponse
 
-from .models import User, Department, Project, Employee
+from .models import User, Department, Employee, EmployeeType
 from .serializers import (
     UserMinimalSerializer,
     DepartmentSerializer,
-    ProjectSerializer,
+    EmployeeTypeSerializer,
     EmployeeSerializer,
     EmployeeCreateSerializer,
-    LoginSerializer
+    LoginSerializer,
+    FaLoginSerializer
 )
 from .permissions import IsAdmin
 from .services import EmployeeBulkUploadService
@@ -44,6 +47,50 @@ class LoginView(APIView):
         return Response(data, status=status.HTTP_200_OK)
 
 
+class FaLoginView(APIView):
+    """Field Assistant login requiring Employee ID + password.
+
+    The password is verified server-side against its stored PBKDF2 hash.
+    """
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = FaLoginSerializer(data=request.data)
+        try:
+            serializer.is_valid(raise_exception=True)
+        except ValidationError:
+            raw = str(request.data.get('employee_id', '')).strip()
+            employee = (
+                Employee.objects
+                .filter(employee_id__iexact=raw)
+                .select_related('user')
+                .first()
+            )
+            AuditService.log(
+                user=employee.user if employee else None,
+                action='FA_LOGIN_FAILED',
+                object_type='Employee',
+                object_id=employee.id if employee else '',
+                request=request,
+                remarks=f"Failed Field Assistant login attempt for '{raw}'."
+            )
+            raise
+
+        data = serializer.validated_data
+        user_obj = User.objects.get(id=data['user']['id'])
+        AuditService.log(
+            user=user_obj,
+            action='FA_LOGIN',
+            object_type='User',
+            object_id=user_obj.id,
+            request=request,
+            remarks=f"Field Assistant {user_obj.username} logged in with Employee ID and password."
+        )
+        return Response(data, status=status.HTTP_200_OK)
+
+
 class CurrentUserView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -55,17 +102,11 @@ class CurrentUserView(APIView):
 
         setting = AttendanceSetting.get_active()
 
+        from .serializers import serialize_attendance_settings
         return Response({
             'user': UserMinimalSerializer(user).data,
             'employee': employee_data,
-            'settings': {
-                'work_start_time': str(setting.work_start_time),
-                'work_end_time': str(setting.work_end_time),
-                'late_grace_minutes': setting.late_grace_minutes,
-                'timezone': setting.timezone,
-                'require_gps': setting.require_gps,
-                'enforce_geofence': setting.enforce_geofence,
-            }
+            'settings': serialize_attendance_settings(setting),
         })
 
 
@@ -75,14 +116,113 @@ class DepartmentViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdmin]
 
 
-class ProjectViewSet(viewsets.ModelViewSet):
-    queryset = Project.objects.all().order_by('name')
-    serializer_class = ProjectSerializer
+class EmployeeTypeViewSet(viewsets.ModelViewSet):
+    """Admin-only CRUD for the employee-type catalog.
+
+    A type that is still referenced by employees cannot be hard-deleted; use
+    PATCH ``is_active=false`` instead to retire it without breaking history.
+    """
+    queryset = EmployeeType.objects.annotate(
+        employee_count=Coalesce(
+            Subquery(
+                Employee.objects
+                .filter(employee_type=OuterRef('code'))
+                .order_by()
+                .values('employee_type')
+                .annotate(cnt=Count('id'))
+                .values('cnt')
+            ),
+            0,
+            output_field=IntegerField(),
+        )
+    ).order_by('name')
+    serializer_class = EmployeeTypeSerializer
     permission_classes = [IsAdmin]
+    http_method_names = ['get', 'post', 'patch', 'delete', 'head', 'options']
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        active = self.request.query_params.get('is_active')
+        if active is not None:
+            if active.lower() in ('true', '1'):
+                qs = qs.filter(is_active=True)
+            elif active.lower() in ('false', '0'):
+                qs = qs.filter(is_active=False)
+        return qs
+
+    def destroy(self, request, *args, **kwargs):
+        type_obj = self.get_object()
+        in_use = Employee.objects.filter(employee_type=type_obj.code).exists()
+        if in_use:
+            return Response(
+                {
+                    'detail': (
+                        f"Employee type '{type_obj.name}' is assigned to employees and cannot be "
+                        "deleted. Deactivate it instead so existing records stay intact."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().destroy(request, *args, **kwargs)
+
+    def perform_create(self, serializer):
+        type_obj = serializer.save()
+        AuditService.log(
+            user=self.request.user,
+            action='USER_CREATED',
+            object_type='EmployeeType',
+            object_id=type_obj.id,
+            request=self.request,
+            new_state={'code': type_obj.code, 'name': type_obj.name},
+            remarks=f"Created employee type {type_obj.name} ({type_obj.code})"
+        )
+
+    def perform_update(self, serializer):
+        old = self.get_object()
+        old_state = {'code': old.code, 'name': old.name, 'is_active': old.is_active}
+        type_obj = serializer.save()
+        new_state = {'code': type_obj.code, 'name': type_obj.name, 'is_active': type_obj.is_active}
+        AuditService.log(
+            user=self.request.user,
+            action='USER_UPDATED',
+            object_type='EmployeeType',
+            object_id=type_obj.id,
+            request=self.request,
+            previous_state=old_state,
+            new_state=new_state,
+            remarks=f"Updated employee type {type_obj.name} ({type_obj.code})"
+        )
+
+    def perform_destroy(self, instance):
+        AuditService.log(
+            user=self.request.user,
+            action='USER_DISABLED',
+            object_type='EmployeeType',
+            object_id=instance.id,
+            request=self.request,
+            remarks=f"Deleted employee type {instance.name} ({instance.code})"
+        )
+        super().perform_destroy(instance)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 class EmployeeViewSet(viewsets.ModelViewSet):
-    queryset = Employee.objects.select_related('user', 'department', 'project').all().order_by('employee_id')
+    queryset = Employee.objects.select_related('user', 'department').all().order_by('employee_id')
     permission_classes = [IsAdmin]
 
     def get_serializer_class(self):
@@ -109,6 +249,9 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         department_id = self.request.query_params.get('department')
         if department_id:
             qs = qs.filter(department_id=department_id)
+        employee_type = self.request.query_params.get('employee_type')
+        if employee_type:
+            qs = qs.filter(employee_type=employee_type)
         return qs
 
     def perform_create(self, serializer):
@@ -175,15 +318,22 @@ class EmployeeViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='reset-password')
     def reset_password(self, request, pk=None):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        from .password_policy import validate_secure_password
+
         employee = self.get_object()
-        new_password = request.data.get('new_password')
-        if not new_password or len(str(new_password).strip()) < 6:
+        new_password = str(request.data.get('new_password') or '').strip()
+        if not new_password:
             return Response(
-                {'detail': 'Password must be at least 6 characters long.'},
+                {'detail': 'Password is required.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         user = employee.user
-        user.set_password(str(new_password).strip())
+        try:
+            validate_secure_password(new_password, user=user)
+        except DjangoValidationError as exc:
+            return Response({'detail': ' '.join(exc.messages)}, status=status.HTTP_400_BAD_REQUEST)
+        user.set_password(new_password)
         user.save()
         AuditService.log(
             user=request.user,
@@ -202,12 +352,15 @@ class EmployeeViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'], url_path='quick-reset-password')
     def quick_reset_password(self, request):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        from .password_policy import validate_secure_password
+
         employee_id = request.data.get('employee_id')
-        new_password = request.data.get('new_password')
+        new_password = str(request.data.get('new_password') or '').strip()
         if not employee_id:
             return Response({'detail': 'Employee ID or selection is required.'}, status=status.HTTP_400_BAD_REQUEST)
-        if not new_password or len(str(new_password).strip()) < 6:
-            return Response({'detail': 'Password must be at least 6 characters long.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not new_password:
+            return Response({'detail': 'Password is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
         employee = (
             Employee.objects
@@ -219,7 +372,11 @@ class EmployeeViewSet(viewsets.ModelViewSet):
             return Response({'detail': f'Employee "{employee_id}" not found.'}, status=status.HTTP_404_NOT_FOUND)
 
         user = employee.user
-        user.set_password(str(new_password).strip())
+        try:
+            validate_secure_password(new_password, user=user)
+        except DjangoValidationError as exc:
+            return Response({'detail': ' '.join(exc.messages)}, status=status.HTTP_400_BAD_REQUEST)
+        user.set_password(new_password)
         user.save()
         AuditService.log(
             user=request.user,
@@ -239,8 +396,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='bulk-template')
     def bulk_template(self, request):
         """
-        Download Excel (.xlsx) or CSV template pre-filled with real active projects
-        and guidance for bulk uploading project-based Field Assistants.
+        Download Excel (.xlsx) or CSV template for bulk uploading Field Assistants.
         """
         fmt = (
             request.query_params.get('file_type')
@@ -266,8 +422,8 @@ class EmployeeViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'], url_path='bulk-upload', parser_classes=[MultiPartParser, FormParser, JSONParser])
     def bulk_upload(self, request):
         """
-        Bulk upload project-based Field Assistants from an Excel (.xlsx) or CSV file.
-        Assigns projects, auto-resolves district geodata, and provisions user accounts.
+        Bulk upload Field Assistants from an Excel (.xlsx) or CSV file.
+        Assigns an employee type and provisions user accounts.
         """
         uploaded_file = request.FILES.get('file')
         if not uploaded_file:
@@ -276,34 +432,12 @@ class EmployeeViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        default_project_id = request.data.get('default_project_id')
-        if default_project_id in ('', 'null', 'undefined', None):
-            default_project_id = None
-
         result = EmployeeBulkUploadService.process_bulk_upload(
             file_obj=uploaded_file,
             filename=uploaded_file.name,
-            default_project_id=default_project_id,
             request=request,
             admin_user=request.user
         )
 
         status_code = status.HTTP_200_OK if result.get('success') else status.HTTP_400_BAD_REQUEST
         return Response(result, status=status_code)
-
-
-
-class BangladeshGeoView(APIView):
-    """
-    Returns the complete administrative hierarchy of Bangladesh:
-    8 Divisions, 64 Districts (Zillas), their respective Upazilas/Thanas,
-    and authoritative center GPS coordinates.
-    """
-    permission_classes = [AllowAny]
-
-    def get(self, request):
-        from .bangladesh_geo import BANGLADESH_GEO
-        return Response({
-            'divisions': list(BANGLADESH_GEO.keys()),
-            'geo': BANGLADESH_GEO
-        })

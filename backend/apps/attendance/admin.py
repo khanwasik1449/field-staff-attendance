@@ -6,7 +6,7 @@ class AttendanceSettingAdmin(admin.ModelAdmin):
     list_display = (
         'id', 'work_start_time', 'work_end_time', 'late_grace_minutes',
         'half_day_minimum_minutes', 'full_day_minimum_minutes', 'timezone',
-        'require_gps', 'enforce_geofence', 'is_active', 'updated_at'
+        'require_gps', 'is_active', 'updated_at'
     )
 
 @admin.register(Attendance)

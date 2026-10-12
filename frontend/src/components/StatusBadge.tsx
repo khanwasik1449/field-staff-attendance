@@ -21,6 +21,10 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, type, classNam
         return 'bg-violet-100 text-violet-800 border-violet-300';
       case 'HOLIDAY':
         return 'bg-sky-100 text-sky-800 border-sky-300';
+      case 'WEEKEND':
+        return 'bg-slate-100 text-slate-600 border-slate-300';
+      case 'FUTURE':
+        return 'bg-slate-50 text-slate-400 border-slate-200';
       case 'PENDING':
         return 'bg-blue-100 text-blue-800 border-blue-300';
       case 'APPROVED':
