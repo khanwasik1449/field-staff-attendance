@@ -98,8 +98,3 @@ Field Assistants sign in with **Employee ID + Password** (no PIN).
 
 ---
 
-## 🌐 Endpoints & Web Portals
-
-* **Web Application**: `https://fams.202.168.244.109.sslip.io/`
-* **API Base URL**: `https://fams.202.168.244.109.sslip.io/api/v1/`
-* **Django Admin**: `https://fams.202.168.244.109.sslip.io/django-admin/`
